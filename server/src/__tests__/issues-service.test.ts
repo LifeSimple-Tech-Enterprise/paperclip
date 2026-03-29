@@ -5,9 +5,11 @@ import {
   agents,
   companies,
   createDb,
+  executionWorkspaces,
   issueComments,
   issueInboxArchives,
   issues,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -40,6 +42,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -217,6 +221,86 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
+  });
+
+  it("filters issues by execution workspace id", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const targetWorkspaceId = randomUUID();
+    const otherWorkspaceId = randomUUID();
+    const linkedIssueId = randomUUID();
+    const otherLinkedIssueId = randomUUID();
+    const unlinkedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(executionWorkspaces).values([
+      {
+        id: targetWorkspaceId,
+        companyId,
+        projectId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Target workspace",
+        status: "active",
+        providerType: "local_fs",
+      },
+      {
+        id: otherWorkspaceId,
+        companyId,
+        projectId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Other workspace",
+        status: "active",
+        providerType: "local_fs",
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: linkedIssueId,
+        companyId,
+        projectId,
+        title: "Linked issue",
+        status: "todo",
+        priority: "medium",
+        executionWorkspaceId: targetWorkspaceId,
+      },
+      {
+        id: otherLinkedIssueId,
+        companyId,
+        projectId,
+        title: "Other linked issue",
+        status: "todo",
+        priority: "medium",
+        executionWorkspaceId: otherWorkspaceId,
+      },
+      {
+        id: unlinkedIssueId,
+        companyId,
+        projectId,
+        title: "Unlinked issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const result = await svc.list(companyId, { executionWorkspaceId: targetWorkspaceId });
+
+    expect(result.map((issue) => issue.id)).toEqual([linkedIssueId]);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {

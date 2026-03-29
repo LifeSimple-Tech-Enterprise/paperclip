@@ -249,6 +249,14 @@ export function ExecutionWorkspaceDetail() {
     enabled: Boolean(workspace?.derivedFromExecutionWorkspaceId),
   });
   const derivedWorkspace = derivedWorkspaceQuery.data ?? null;
+  const linkedIssuesQuery = useQuery({
+    queryKey: workspace
+      ? queryKeys.issues.listByExecutionWorkspace(workspace.companyId, workspace.id)
+      : ["issues", "__execution-workspace__", "__none__"],
+    queryFn: () => issuesApi.list(workspace!.companyId, { executionWorkspaceId: workspace!.id }),
+    enabled: Boolean(workspace?.companyId),
+  });
+  const linkedIssues = linkedIssuesQuery.data ?? [];
 
   const linkedProjectWorkspace = useMemo(
     () => project?.workspaces.find((item) => item.id === workspace?.projectWorkspaceId) ?? null,
@@ -784,6 +792,55 @@ export function ExecutionWorkspaceDetail() {
               )}
             </div>
           </div>
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div className="space-y-1">
+              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Linked issues</div>
+              <h2 className="text-lg font-semibold">Issues using this workspace</h2>
+              <p className="text-sm text-muted-foreground">
+                Any issue attached to this execution workspace appears here so you can review the full session context before reusing or closing it.
+              </p>
+            </div>
+            <StatusPill>{linkedIssues.length} linked</StatusPill>
+          </div>
+          <Separator className="my-4" />
+          {linkedIssuesQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading linked issues…</p>
+          ) : linkedIssuesQuery.error ? (
+            <p className="text-sm text-destructive">
+              {linkedIssuesQuery.error instanceof Error
+                ? linkedIssuesQuery.error.message
+                : "Failed to load linked issues."}
+            </p>
+          ) : linkedIssues.length > 0 ? (
+            <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+              {linkedIssues.map((issue) => (
+                <Link
+                  key={issue.id}
+                  to={issueUrl(issue)}
+                  className="min-w-72 rounded-xl border border-border/80 bg-background px-4 py-3 transition-colors hover:bg-accent/20"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="font-mono text-xs text-muted-foreground">
+                        {issue.identifier ?? issue.id.slice(0, 8)}
+                      </div>
+                      <div className="line-clamp-2 text-sm font-medium">{issue.title}</div>
+                    </div>
+                    <StatusPill className="shrink-0">{issue.status}</StatusPill>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                    <span className="uppercase tracking-[0.16em]">{issue.priority}</span>
+                    <span>{formatDateTime(issue.updatedAt)}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No issues are currently linked to this execution workspace.</p>
+          )}
         </div>
       </div>
       <ExecutionWorkspaceCloseDialog
