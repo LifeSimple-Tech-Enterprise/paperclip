@@ -30,6 +30,7 @@ import {
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
+  resolveWorkspaceRuntimeReadinessTimeoutSec,
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
   startRuntimeServicesForWorkspaceControl,
@@ -1186,6 +1187,81 @@ describe("realizeExecutionWorkspace", () => {
       expect(String(caught)).toContain("simulated init failure");
       await expect(fs.stat(path.join(worktreeRoot, ".paperclip", "config.json"))).rejects.toThrow();
       await expect(fs.stat(path.join(worktreeRoot, ".paperclip", ".env"))).rejects.toThrow();
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("retries worktree-local pnpm install without a frozen lockfile when the lockfile is outdated", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-outdated-lockfile-"));
+    const baseRoot = path.join(tempRoot, "base");
+    const worktreeRoot = path.join(tempRoot, "worktree");
+    const fakeBin = path.join(tempRoot, "bin");
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const scriptPath = path.join(worktreeRoot, "provision-worktree.sh");
+
+    try {
+      await fs.mkdir(path.join(baseRoot, "node_modules"), { recursive: true });
+      await fs.mkdir(worktreeRoot, { recursive: true });
+      await fs.mkdir(fakeBin, { recursive: true });
+      await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
+      await fs.chmod(scriptPath, 0o755);
+      await fs.writeFile(
+        path.join(worktreeRoot, "package.json"),
+        JSON.stringify(
+          {
+            name: "workspace-root",
+            private: true,
+            packageManager: "pnpm@9.15.4",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(worktreeRoot, "pnpm-lock.yaml"),
+        ["lockfileVersion: '9.0'", "", "importers:", "  .: {}", ""].join("\n"),
+        "utf8",
+      );
+      await fs.writeFile(
+        fakePnpmPath,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "  exit 1",
+          "fi",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--frozen-lockfile\" ]; then",
+          "  echo \"ERR_PNPM_OUTDATED_LOCKFILE\" >&2",
+          "  exit 1",
+          "fi",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--no-frozen-lockfile\" ]; then",
+          "  mkdir -p \"$PWD/node_modules\"",
+          "  : > \"$PWD/node_modules/.retry-success\"",
+          "  exit 0",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.chmod(fakePnpmPath, 0o755);
+
+      const result = await execFileAsync(scriptPath, [], {
+        cwd: worktreeRoot,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
+          PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
+        },
+      });
+
+      expect(result.stderr).toContain("retrying install without --frozen-lockfile");
+      await expect(fs.readFile(path.join(worktreeRoot, "node_modules", ".retry-success"), "utf8")).resolves.toBe("");
+      await expect(fs.readFile(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8")).resolves.toContain(
+        "\"database\"",
+      );
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -2498,6 +2574,51 @@ describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
         "1": "stopped",
       },
     });
+  });
+});
+
+describe("resolveWorkspaceRuntimeReadinessTimeoutSec", () => {
+  it("extends the default readiness timeout for dev-server commands", () => {
+    expect(
+      resolveWorkspaceRuntimeReadinessTimeoutSec({
+        command: "pnpm dev",
+        readiness: {
+          type: "http",
+          urlTemplate: "http://127.0.0.1:{{port}}",
+        },
+      }),
+    ).toBe(90);
+    expect(
+      resolveWorkspaceRuntimeReadinessTimeoutSec({
+        command: "npm run dev -- --host 127.0.0.1",
+        readiness: {
+          type: "http",
+          urlTemplate: "http://127.0.0.1:{{port}}",
+        },
+      }),
+    ).toBe(90);
+  });
+
+  it("keeps explicit readiness timeouts and non-dev defaults unchanged", () => {
+    expect(
+      resolveWorkspaceRuntimeReadinessTimeoutSec({
+        command: "pnpm dev",
+        readiness: {
+          type: "http",
+          timeoutSec: 12,
+          urlTemplate: "http://127.0.0.1:{{port}}",
+        },
+      }),
+    ).toBe(12);
+    expect(
+      resolveWorkspaceRuntimeReadinessTimeoutSec({
+        command: "node server.js",
+        readiness: {
+          type: "http",
+          urlTemplate: "http://127.0.0.1:{{port}}",
+        },
+      }),
+    ).toBe(30);
   });
 });
 

@@ -404,13 +404,48 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
       done
     }
 
-    (
-      cd "$worktree_cwd"
-      pnpm install --frozen-lockfile
-    ) || {
-      restore_moved_symlinks
-      exit 1
+    run_pnpm_install() {
+      local stdout_path stderr_path
+      stdout_path="$(mktemp)"
+      stderr_path="$(mktemp)"
+
+      if (
+        cd "$worktree_cwd"
+        pnpm install "$@"
+      ) >"$stdout_path" 2>"$stderr_path"; then
+        cat "$stdout_path"
+        cat "$stderr_path" >&2
+        rm -f "$stdout_path" "$stderr_path"
+        return 0
+      fi
+
+      local exit_code=$?
+      cat "$stdout_path"
+      cat "$stderr_path" >&2
+      if grep -q "ERR_PNPM_OUTDATED_LOCKFILE" "$stdout_path" "$stderr_path"; then
+        rm -f "$stdout_path" "$stderr_path"
+        return 90
+      fi
+
+      rm -f "$stdout_path" "$stderr_path"
+      return "$exit_code"
     }
+
+    if run_pnpm_install --frozen-lockfile; then
+      :
+    else
+      install_exit_code=$?
+      if [[ "$install_exit_code" -eq 90 ]]; then
+        echo "pnpm-lock.yaml is out of date in this execution workspace; retrying install without --frozen-lockfile." >&2
+        run_pnpm_install --no-frozen-lockfile || {
+          restore_moved_symlinks
+          exit 1
+        }
+      else
+        restore_moved_symlinks
+        exit "$install_exit_code"
+      fi
+    fi
 
     cleanup_moved_symlinks
   fi
