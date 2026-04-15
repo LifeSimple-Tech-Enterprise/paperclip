@@ -61,9 +61,21 @@ const wrapAnywhereStyle: React.CSSProperties = {
   wordBreak: "break-word",
 };
 
+const scrollableBlockStyle: React.CSSProperties = {
+  maxWidth: "100%",
+  overflowX: "auto",
+};
+
 function mergeWrapStyle(style?: React.CSSProperties): React.CSSProperties {
   return {
     ...wrapAnywhereStyle,
+    ...style,
+  };
+}
+
+function mergeScrollableBlockStyle(style?: React.CSSProperties): React.CSSProperties {
+  return {
+    ...scrollableBlockStyle,
     ...style,
   };
 }
@@ -190,7 +202,7 @@ export function MarkdownBody({
       if (mermaidSource) {
         return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
       }
-      return <pre {...preProps}>{preChildren}</pre>;
+      return <pre {...preProps} style={mergeScrollableBlockStyle(preProps.style as React.CSSProperties | undefined)}>{preChildren}</pre>;
     },
     code: ({ node: _node, style: codeStyle, children: codeChildren, ...codeProps }) => (
       <code {...codeProps} style={mergeWrapStyle(codeStyle as React.CSSProperties | undefined)}>

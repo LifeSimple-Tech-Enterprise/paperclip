@@ -207,4 +207,11 @@ describe("MarkdownBody", () => {
     expect(html).toContain('<a href="https://example.com/reallyreallyreallyreallyreallyreallyreallyreallylong"');
     expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
   });
+
+  it("keeps fenced code blocks width-bounded and horizontally scrollable", () => {
+    const html = renderMarkdown("```text\nGET /heartbeat-runs/ca5d23fc-c15b-4826-8ff1-2b6dd11be096/log?offset=2062357&limitBytes=256000\n```");
+
+    expect(html).toContain("<pre");
+    expect(html).toContain('style="max-width:100%;overflow-x:auto"');
+  });
 });
