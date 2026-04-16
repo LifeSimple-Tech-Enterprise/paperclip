@@ -32,6 +32,7 @@ import {
   listJoinRequestsQuerySchema,
   resolveCliAuthChallengeSchema,
   searchAdminUsersQuerySchema,
+  updateCompanyMemberWithPermissionsSchema,
   updateCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
@@ -3662,6 +3663,80 @@ export function accessRoutes(
         details: {
           membershipRole: updated.membershipRole,
           status: updated.status,
+        },
+      });
+
+      const member = (await loadCompanyMemberRecords(db, companyId)).find(
+        (entry) => entry.id === memberId,
+      );
+      if (!member) throw notFound("Member not found");
+      res.json(member);
+    }
+  );
+
+  router.patch(
+    "/companies/:companyId/members/:memberId/role-and-grants",
+    validate(updateCompanyMemberWithPermissionsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const memberId = req.params.memberId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+
+      const existing = await access.getMemberById(companyId, memberId);
+      if (!existing) throw notFound("Member not found");
+
+      const nextMembershipRole =
+        req.body.membershipRole !== undefined
+          ? req.body.membershipRole
+          : existing.membershipRole;
+      const nextStatus = req.body.status ?? existing.status;
+
+      if (
+        existing.principalType === "user" &&
+        existing.status === "active" &&
+        existing.membershipRole === "owner" &&
+        (nextStatus !== "active" || nextMembershipRole !== "owner")
+      ) {
+        const activeOwnerCount = await db
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.status, "active"),
+              eq(companyMemberships.membershipRole, "owner"),
+            ),
+          )
+          .then((rows) => rows.length);
+        if (activeOwnerCount <= 1) {
+          throw conflict("Cannot remove the last active owner");
+        }
+      }
+
+      const updated = await access.updateMemberAndPermissions(
+        companyId,
+        memberId,
+        {
+          membershipRole: req.body.membershipRole,
+          status: req.body.status,
+          grants: req.body.grants ?? [],
+        },
+        req.actor.userId ?? null,
+      );
+      if (!updated) throw notFound("Member not found");
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "company_member.access_updated",
+        entityType: "company_membership",
+        entityId: memberId,
+        details: {
+          membershipRole: updated.membershipRole,
+          status: updated.status,
+          grantCount: req.body.grants?.length ?? 0,
         },
       });
 

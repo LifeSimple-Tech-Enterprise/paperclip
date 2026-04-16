@@ -110,6 +110,29 @@ describe("auth routes", () => {
     });
   });
 
+  it("preserves the existing avatar when updating only the profile name", async () => {
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+      },
+      baseUser,
+    );
+
+    const res = await request(app)
+      .patch("/api/auth/profile")
+      .send({ name: "Board Operator" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "user-1",
+      name: "Board Operator",
+      email: "jane@example.com",
+      image: "https://example.com/jane.png",
+    });
+  });
+
   it("accepts Paperclip asset paths for avatars", async () => {
     const app = await createApp(
       {

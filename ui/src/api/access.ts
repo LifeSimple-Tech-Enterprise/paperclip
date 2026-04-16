@@ -328,6 +328,19 @@ export const accessApi = {
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}/permissions`, input),
 
+  updateMemberAccess: (
+    companyId: string,
+    memberId: string,
+    input: {
+      membershipRole?: HumanCompanyRole | null;
+      status?: "pending" | "active" | "suspended";
+      grants: Array<{
+        permissionKey: PermissionKey;
+        scope?: Record<string, unknown> | null;
+      }>;
+    },
+  ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}/role-and-grants`, input),
+
   approveJoinRequest: (companyId: string, requestId: string) =>
     api.post<JoinRequest>(`/companies/${companyId}/join-requests/${requestId}/approve`, {}),
 

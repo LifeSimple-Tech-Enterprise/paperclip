@@ -84,11 +84,9 @@ export function CompanyAccess() {
 
   const updateMemberMutation = useMutation({
     mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: CompanyMember["status"]; grants: PermissionKey[] }) => {
-      await accessApi.updateMember(selectedCompanyId!, input.memberId, {
+      return accessApi.updateMemberAccess(selectedCompanyId!, input.memberId, {
         membershipRole: input.membershipRole,
         status: input.status,
-      });
-      return accessApi.updateMemberPermissions(selectedCompanyId!, input.memberId, {
         grants: input.grants.map((permissionKey) => ({ permissionKey })),
       });
     },

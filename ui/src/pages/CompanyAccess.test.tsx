@@ -8,6 +8,7 @@ import { CompanyAccess } from "./CompanyAccess";
 
 const listMembersMock = vi.hoisted(() => vi.fn());
 const listJoinRequestsMock = vi.hoisted(() => vi.fn());
+const updateMemberAccessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/access", () => ({
   accessApi: {
@@ -15,6 +16,8 @@ vi.mock("@/api/access", () => ({
     listJoinRequests: (companyId: string, status: string) => listJoinRequestsMock(companyId, status),
     updateMember: vi.fn(),
     updateMemberPermissions: vi.fn(),
+    updateMemberAccess: (companyId: string, memberId: string, input: unknown) =>
+      updateMemberAccessMock(companyId, memberId, input),
     approveJoinRequest: vi.fn(),
     rejectJoinRequest: vi.fn(),
   },
@@ -109,6 +112,7 @@ describe("CompanyAccess", () => {
         },
       },
     ]);
+    updateMemberAccessMock.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -160,6 +164,53 @@ describe("CompanyAccess", () => {
     expect(document.body.textContent).toContain(
       "Included implicitly by the Owner role. Add an explicit grant only if it should stay after the role changes.",
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("saves member role, status, and grants in one request", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const editButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Edit",
+    );
+    expect(editButton).toBeTruthy();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent === "Save access",
+    );
+    expect(saveButton).toBeTruthy();
+
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(updateMemberAccessMock).toHaveBeenCalledWith("company-1", "member-1", {
+      membershipRole: "owner",
+      status: "active",
+      grants: [],
+    });
 
     await act(async () => {
       root.unmount();

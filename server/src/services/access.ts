@@ -143,6 +143,64 @@ export function accessService(db: Db) {
     return member;
   }
 
+  async function updateMemberAndPermissions(
+    companyId: string,
+    memberId: string,
+    data: {
+      membershipRole?: string | null;
+      status?: "pending" | "active" | "suspended";
+      grants: GrantInput[];
+    },
+    grantedByUserId: string | null,
+  ) {
+    const existing = await getMemberById(companyId, memberId);
+    if (!existing) return null;
+
+    const nextMembershipRole =
+      data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
+    const nextStatus = data.status ?? existing.status;
+    const now = new Date();
+
+    return db.transaction(async (tx) => {
+      const updated = await tx
+        .update(companyMemberships)
+        .set({
+          membershipRole: nextMembershipRole,
+          status: nextStatus,
+          updatedAt: now,
+        })
+        .where(eq(companyMemberships.id, existing.id))
+        .returning()
+        .then((rows) => rows[0] ?? existing);
+
+      await tx
+        .delete(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, existing.principalType),
+            eq(principalPermissionGrants.principalId, existing.principalId),
+          ),
+        );
+      if (data.grants.length > 0) {
+        await tx.insert(principalPermissionGrants).values(
+          data.grants.map((grant) => ({
+            companyId,
+            principalType: existing.principalType,
+            principalId: existing.principalId,
+            permissionKey: grant.permissionKey,
+            scope: grant.scope ?? null,
+            grantedByUserId,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        );
+      }
+
+      return updated;
+    });
+  }
+
   async function promoteInstanceAdmin(userId: string) {
     const existing = await db
       .select()
@@ -399,6 +457,7 @@ export function accessService(db: Db) {
     listActiveUserMemberships,
     copyActiveUserMemberships,
     setMemberPermissions,
+    updateMemberAndPermissions,
     promoteInstanceAdmin,
     demoteInstanceAdmin,
     listUserCompanyAccess,

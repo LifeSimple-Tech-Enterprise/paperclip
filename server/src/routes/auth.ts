@@ -72,7 +72,7 @@ export function authRoutes(db: Db) {
       .update(authUsers)
       .set({
         name: patch.name,
-        image: patch.image ?? null,
+        ...(patch.image !== undefined ? { image: patch.image } : {}),
         updatedAt: now,
       })
       .where(eq(authUsers.id, req.actor.userId))

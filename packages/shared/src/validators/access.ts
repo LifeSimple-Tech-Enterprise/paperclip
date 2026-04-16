@@ -106,6 +106,16 @@ export const updateCompanyMemberSchema = z.object({
 
 export type UpdateCompanyMember = z.infer<typeof updateCompanyMemberSchema>;
 
+export const updateCompanyMemberWithPermissionsSchema = z.object({
+  membershipRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
+  status: z.enum(MEMBERSHIP_STATUSES).optional(),
+  grants: updateMemberPermissionsSchema.shape.grants,
+}).refine((value) => value.membershipRole !== undefined || value.status !== undefined, {
+  message: "membershipRole or status is required",
+});
+
+export type UpdateCompanyMemberWithPermissions = z.infer<typeof updateCompanyMemberWithPermissionsSchema>;
+
 export const updateUserCompanyAccessSchema = z.object({
   companyIds: z.array(z.string().uuid()).default([]),
 });
