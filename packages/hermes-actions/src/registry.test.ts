@@ -13,7 +13,7 @@ import {
   V1_ACTION_IDS,
   V1_CRITICAL_ACTION_IDS,
   type V1ActionId,
-} from "@paperclipai/hermes-agent/intent";
+} from "./intent.js";
 
 import {
   ACTION_REGISTRY,

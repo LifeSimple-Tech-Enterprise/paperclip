@@ -34,7 +34,7 @@ import {
   V1_ACTION_IDS,
   V1_CRITICAL_ACTION_IDS,
   type V1ActionId,
-} from "@paperclipai/hermes-agent/intent";
+} from "./intent.js";
 
 // ---------------------------------------------------------------------------
 // Shared character-class regexes
@@ -112,6 +112,12 @@ export interface ActionDefinition<S extends z.ZodTypeAny = z.ZodTypeAny> {
   wrapperPath: string;
   argv: (args: z.infer<S>) => string[];
   criticality: Criticality;
+  /**
+   * Per-action rate-limit cap (rolling 1-hour window).
+   * When absent the executor falls back to the `HERMES_RATE_LIMIT_MAX_PER_HOUR`
+   * env var, and then to the library default of 3.
+   */
+  maxPerHour?: number;
 }
 
 // ---------------------------------------------------------------------------

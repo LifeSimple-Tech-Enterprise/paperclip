@@ -13,9 +13,14 @@
  */
 
 import { spawn as nodeSpawn } from "node:child_process";
-import type { IntentSuccess } from "@paperclipai/hermes-agent/intent";
+import type { IntentSuccess } from "./intent.js";
 import { getAction, UnknownActionError } from "./registry.js";
 import { openJournal } from "./journal.js";
+import {
+  checkAndRecord,
+  RateLimitError,
+  DEFAULT_MAX_PER_HOUR,
+} from "./rate-limit.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -28,11 +33,13 @@ export interface ExecutorContext {
   isApproved?: (intent: IntentSuccess) => boolean | Promise<boolean>;
   /** Override journal file path for tests. */
   journalPath?: string;
+  /** Override rate-limit store path for tests. */
+  rateLimitPath?: string;
   /** Override spawner for tests. */
   spawn?: typeof nodeSpawn;
   /** Override sudo binary; default `/usr/bin/sudo`. */
   sudoPath?: string;
-  /** Wall-clock provider for journal `ts` (default `() => new Date()`). */
+  /** Wall-clock provider for journal `ts` and rate-limit window (default `() => new Date()`). */
   now?: () => Date;
 }
 
@@ -40,6 +47,7 @@ export type ExecutionCode =
   | "ok"
   | "invalid_args"
   | "awaiting_approval"
+  | "rate_limited"
   | "unknown_action"
   | "wrapper_nonzero"
   | "spawn_error";
@@ -53,13 +61,17 @@ export interface ExecutionResult {
   stderrTruncated: string;
   /**
    * null only when no journal entry was written:
-   * invalid_args, awaiting_approval, unknown_action, spawn_error.
+   * invalid_args, awaiting_approval, rate_limited, unknown_action, spawn_error.
    */
   journalSeq: number | null;
-  /** Human-readable detail for invalid_args / spawn_error. */
+  /** Human-readable detail for invalid_args / spawn_error / rate_limited. */
   message?: string;
   /** Populated only when code === "invalid_args". */
   zodIssues?: import("zod").ZodIssue[];
+  /** Populated only when code === "rate_limited". */
+  rateLimitResetAt?: Date;
+  /** Populated only when code === "rate_limited". */
+  rateLimitMax?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +215,35 @@ export async function executeIntent(
         stderrTruncated: "",
         journalSeq: null,
       };
+    }
+  }
+
+  // Step 3b: Per-action_id rate limit (rolling 1-hour window).
+  {
+    const envCap = process.env["HERMES_RATE_LIMIT_MAX_PER_HOUR"];
+    const maxPerHour =
+      def.maxPerHour ??
+      (envCap !== undefined ? Number.parseInt(envCap, 10) : DEFAULT_MAX_PER_HOUR);
+    try {
+      await checkAndRecord(intent.intent.action_id, maxPerHour, {
+        storePath: ctx.rateLimitPath,
+        now: ctx.now,
+      });
+    } catch (err) {
+      if (err instanceof RateLimitError) {
+        return {
+          ok: false,
+          code: "rate_limited",
+          exitCode: null,
+          stdoutTruncated: "",
+          stderrTruncated: "",
+          journalSeq: null,
+          message: err.message,
+          rateLimitResetAt: err.resetAt,
+          rateLimitMax: err.limit,
+        };
+      }
+      throw err;
     }
   }
 
