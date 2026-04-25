@@ -3446,6 +3446,97 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  /**
+   * Reconcile agents whose `status` is stuck at `'running'` with no corresponding
+   * live heartbeat run. This can happen when the success-path tail between
+   * `setRunStatus(…succeeded)` and `finalizeAgentStatus` is interrupted (process
+   * kill, unhandled exception in `releaseIssueExecutionAndPromote`, etc.), leaving
+   * the agent row permanently stuck and blocking future `skip_if_active` wakes.
+   *
+   * Must run AFTER `reapOrphanedRuns` so that any just-reaped run has already had
+   * `finalizeAgentStatus` called before we evaluate agent status independently.
+   *
+   * @param opts.staleThresholdMs  Only reconcile agents whose `updated_at` is older
+   *   than this many ms (default 10 min). This avoids a race with a legitimate
+   *   run-start transaction that has set `agent.status='running'` but has not yet
+   *   inserted the `heartbeat_runs` row. 10 min >> the longest observed gap between
+   *   agent.updated_at (set on run-start) and the run entering status='running'.
+   */
+  async function reconcileOrphanedAgentStatus(opts?: { staleThresholdMs?: number }) {
+    const staleThresholdMs = opts?.staleThresholdMs ?? 10 * 60 * 1000;
+    const now = new Date();
+
+    const runningAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.status, "running"));
+
+    const reconciledIds: string[] = [];
+
+    for (const agent of runningAgents) {
+      // Guard: do not touch paused/terminated agents (mirrors finalizeAgentStatus guard at line 3093).
+      if (agent.status === "paused" || agent.status === "terminated") continue;
+
+      // Apply staleness threshold against agents.updated_at to avoid racing run-start transactions.
+      if (staleThresholdMs > 0) {
+        const refTime = agent.updatedAt ? new Date(agent.updatedAt).getTime() : 0;
+        if (now.getTime() - refTime < staleThresholdMs) continue;
+      }
+
+      // Check for any live runs (running or queued) for this agent.
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agent.id),
+            inArray(heartbeatRuns.status, ["running", "queued"]),
+          ),
+        );
+
+      if (Number(count ?? 0) > 0) continue;
+
+      // Idempotent update: only succeeds if status is still 'running' at write time.
+      const updated = await db
+        .update(agents)
+        .set({ status: "idle", updatedAt: new Date() })
+        .where(and(eq(agents.id, agent.id), eq(agents.status, "running")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) continue;
+
+      logger.warn(
+        { agentId: agent.id, prevUpdatedAt: agent.updatedAt },
+        "reconciled orphaned agent status",
+      );
+
+      publishLiveEvent({
+        companyId: agent.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: agent.id,
+          status: "idle",
+          lastHeartbeatAt: updated.lastHeartbeatAt
+            ? new Date(updated.lastHeartbeatAt).toISOString()
+            : null,
+          outcome: "reconciled_stale_running",
+        },
+      });
+
+      reconciledIds.push(agent.id);
+    }
+
+    if (reconciledIds.length > 0) {
+      logger.warn(
+        { reconciledCount: reconciledIds.length, agentIds: reconciledIds },
+        "reconciled orphaned agent status rows",
+      );
+    }
+
+    return { reconciled: reconciledIds.length, agentIds: reconciledIds };
+  }
+
   async function resumeQueuedRuns() {
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -6027,6 +6118,8 @@ export function heartbeatService(db: Db) {
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    reconcileOrphanedAgentStatus,
 
     resumeQueuedRuns,
 

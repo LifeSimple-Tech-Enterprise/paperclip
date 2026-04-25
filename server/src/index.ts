@@ -655,9 +655,11 @@ export async function startServer(): Promise<StartedServer> {
     const routines = routineService(db as any);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
+    // reconcile any agent.status='running' rows with no live run (runs AFTER reap so
+    // just-reaped runs have already called finalizeAgentStatus), then resume queued work.
     void heartbeat
       .reapOrphanedRuns()
+      .then(() => heartbeat.reconcileOrphanedAgentStatus())
       .then(() => heartbeat.resumeQueuedRuns())
       .then(async () => {
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
@@ -695,10 +697,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "routine scheduler tick failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+      // Periodically reap orphaned runs (5-min staleness threshold), reconcile any
+      // agent.status='running' rows with no live run (10-min threshold, runs AFTER
+      // reap), and make sure persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.reconcileOrphanedAgentStatus({ staleThresholdMs: 10 * 60 * 1000 }))
         .then(() => heartbeat.resumeQueuedRuns())
         .then(async () => {
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
