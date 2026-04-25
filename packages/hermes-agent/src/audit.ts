@@ -137,6 +137,12 @@ export function formatExecutionResultComment(args: {
     `journal_seq: \`${result.journalSeq ?? "null"}\``,
   ];
 
+  // Freeform message — set for spawn_error / unknown_action (surfaces the
+  // underlying cause without leaking through stdout/stderr buffers).
+  if (result.message) {
+    lines.push(``, `Message: ${result.message}`);
+  }
+
   if (result.stdoutTruncated) {
     lines.push(``, `\`\`\``, result.stdoutTruncated, `\`\`\``);
   }

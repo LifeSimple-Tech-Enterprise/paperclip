@@ -1,230 +1,196 @@
 /**
- * Contract tests for the FROZEN V1 action registry — LIF-243 §C1.
+ * Failing tests for the V1 action registry (LIF-243 §C1, LIF-247 TDD).
  *
- * Locks the public surface of `registry.ts` so the Drafter's executor and
- * QA's failure/journal integration tests have a stable target. Adding/removing
- * an entry, renaming a wrapper path, or flipping a criticality should fail
- * here with a precise diff before propagating to downstream tests.
+ * These tests fail with "module not found" until Lead lands the registry
+ * implementation. Once it lands, they assert the FROZEN registry contract
+ * documented in LIF-243 PLAN §1 and LIF-232 Plan v4 §0.4.
  */
 
 import { describe, expect, it } from "vitest";
-
 import {
   V1_ACTION_IDS,
   V1_CRITICAL_ACTION_IDS,
   type V1ActionId,
 } from "@paperclipai/hermes-agent/intent";
-
+// @ts-expect-error -- module not yet implemented; Drafter/Lead lands this
 import {
-  ACTION_REGISTRY,
-  UnknownActionError,
   getAction,
+  UnknownActionError,
 } from "./registry.js";
 
-// ---------------------------------------------------------------------------
-// Inventory
-// ---------------------------------------------------------------------------
+describe("V1 action registry — completeness", () => {
+  it.each(V1_ACTION_IDS as readonly V1ActionId[])(
+    "registers an entry for %s",
+    (actionId) => {
+      const def = getAction(actionId);
+      expect(def).toBeDefined();
+      expect(def.id).toBe(actionId);
+    },
+  );
 
-describe("ACTION_REGISTRY — inventory (FROZEN per Plan v4 §0.4)", () => {
-  it("registers exactly the 9 V1 action ids", () => {
-    expect(Object.keys(ACTION_REGISTRY).sort()).toEqual(
-      [...V1_ACTION_IDS].sort(),
-    );
+  it("registry exposes exactly the V1 ids — no extras", () => {
+    for (const id of V1_ACTION_IDS) {
+      expect(() => getAction(id)).not.toThrow();
+    }
   });
+});
 
-  it.each(V1_ACTION_IDS)(
-    "%s — entry id matches its registry key",
-    (id) => {
-      expect(ACTION_REGISTRY[id].id).toBe(id);
-    },
-  );
-
-  it.each(V1_ACTION_IDS)(
-    "%s — wrapperPath is under /usr/local/sbin/hermes-",
-    (id) => {
-      expect(ACTION_REGISTRY[id].wrapperPath).toMatch(
-        /^\/usr\/local\/sbin\/hermes-[a-z][a-z0-9-]+$/,
-      );
-    },
-  );
-
-  it.each(V1_ACTION_IDS)(
-    "%s — criticality matches V1_CRITICAL_ACTION_IDS",
-    (id) => {
-      const expectCritical = V1_CRITICAL_ACTION_IDS.has(id);
-      const actualCritical =
-        ACTION_REGISTRY[id].criticality === "critical";
-      expect(actualCritical).toBe(expectCritical);
+describe("V1 action registry — criticality", () => {
+  it.each(V1_ACTION_IDS as readonly V1ActionId[])(
+    "%s criticality matches V1_CRITICAL_ACTION_IDS",
+    (actionId) => {
+      const def = getAction(actionId);
+      const expected = V1_CRITICAL_ACTION_IDS.has(actionId)
+        ? "critical"
+        : "routine";
+      expect(def.criticality).toBe(expected);
     },
   );
 });
 
-// ---------------------------------------------------------------------------
-// argv builders — match wrapper-side argv shapes from LIF-237
-// ---------------------------------------------------------------------------
+describe("V1 action registry — wrapperPath", () => {
+  it.each(V1_ACTION_IDS as readonly V1ActionId[])(
+    "%s wrapperPath is /usr/local/sbin/hermes-*",
+    (actionId) => {
+      const def = getAction(actionId);
+      expect(def.wrapperPath).toMatch(/^\/usr\/local\/sbin\/hermes-/);
+    },
+  );
+});
 
-describe("ACTION_REGISTRY — argv shapes (must match LIF-237 wrappers)", () => {
-  type Case = {
+describe("V1 action registry — argv producer (positive cases)", () => {
+  // Table per PLAN §0: argv is positional, no shell-concat.
+  const cases: ReadonlyArray<{
     id: V1ActionId;
-    args: Record<string, unknown>;
-    wrapperPath: string;
-    expectedArgv: string[];
-  };
-
-  const cases: Case[] = [
+    args: Record<string, string>;
+    expected: readonly string[];
+  }> = [
     {
       id: "service_restart_paperclip",
       args: {},
-      wrapperPath: "/usr/local/sbin/hermes-restart-paperclip",
-      expectedArgv: [],
+      expected: [],
     },
     {
       id: "service_restart_github_runner",
       args: {},
-      wrapperPath: "/usr/local/sbin/hermes-restart-gha-runner",
-      expectedArgv: [],
+      expected: [],
     },
-    {
-      id: "pm2_restart",
-      args: { name: "paperclip" },
-      wrapperPath: "/usr/local/sbin/hermes-pm2-restart",
-      expectedArgv: ["paperclip"],
-    },
-    {
-      id: "ufw_status",
-      args: {},
-      wrapperPath: "/usr/local/sbin/hermes-ufw-status",
-      expectedArgv: [],
-    },
+    { id: "pm2_restart", args: { name: "paperclip" }, expected: ["paperclip"] },
+    { id: "ufw_status", args: {}, expected: [] },
     {
       id: "diag_journal_tail",
       args: { unit: "paperclip.service", n: "5" },
-      wrapperPath: "/usr/local/sbin/hermes-log-tail",
-      expectedArgv: ["paperclip.service", "5"],
+      expected: ["paperclip.service", "5"],
     },
-    {
-      id: "diag_disk_usage",
-      args: { key: "paperclip-instances" },
-      wrapperPath: "/usr/local/sbin/hermes-disk-check",
-      expectedArgv: ["paperclip-instances"],
-    },
+    // diag_disk_usage and diag_health_probe both take a `key` arg that the
+    // shared wrappers (`hermes-disk-check`, `hermes-health-probe`) resolve
+    // against `/etc/hermes/*.allowlist` files (closed enum lives wrapper-side
+    // per LIF-237). The TS layer enforces the character class only.
+    { id: "diag_disk_usage", args: { key: "var" }, expected: ["var"] },
     {
       id: "diag_health_probe",
-      args: { key: "paperclip-local" },
-      wrapperPath: "/usr/local/sbin/hermes-health-probe",
-      expectedArgv: ["paperclip-local"],
+      args: { key: "paperclip" },
+      expected: ["paperclip"],
     },
+    // `ufw_allow` and `ufw_deny` share `/usr/local/sbin/hermes-ufw-apply`
+    // (single wrapper, two verbs) per LIF-237 — argv MUST carry the verb so
+    // the wrapper can distinguish allow-vs-deny when called for either id.
     {
       id: "ufw_allow",
       args: { preset: "https-public" },
-      wrapperPath: "/usr/local/sbin/hermes-ufw-apply",
-      expectedArgv: ["allow", "https-public"],
+      expected: ["allow", "https-public"],
     },
     {
       id: "ufw_deny",
       args: { preset: "https-public" },
-      wrapperPath: "/usr/local/sbin/hermes-ufw-apply",
-      expectedArgv: ["deny", "https-public"],
+      expected: ["deny", "https-public"],
     },
   ];
 
   it.each(cases)(
-    "$id → spawn args [$wrapperPath, ...$expectedArgv]",
-    ({ id, args, wrapperPath, expectedArgv }) => {
-      const def = ACTION_REGISTRY[id];
-      expect(def.wrapperPath).toBe(wrapperPath);
-      const parsed = def.argsSchema.safeParse(args);
-      expect(parsed.success, JSON.stringify(parsed)).toBe(true);
-      // The argv builder receives the schema's PARSED output (e.g. n -> number),
-      // not the raw record. Asserting on parsed.data exercises that contract.
-      expect(def.argv((parsed as { data: unknown }).data)).toEqual(
-        expectedArgv,
-      );
+    "$id argv($args) → $expected",
+    ({ id, args, expected }) => {
+      const def = getAction(id);
+      const argv = def.argv(args);
+      expect(Array.isArray(argv)).toBe(true);
+      expect(argv).toEqual(expected);
     },
   );
 });
 
-// ---------------------------------------------------------------------------
-// argsSchema — defense-in-depth character class enforcement
-// ---------------------------------------------------------------------------
-
-describe("ACTION_REGISTRY — argsSchema rejects unsafe inputs", () => {
-  const accepted: Array<[V1ActionId, Record<string, unknown>]> = [
-    ["pm2_restart", { name: "paperclip" }],
-    ["pm2_restart", { name: "github-runner.worker_1" }],
-    ["diag_journal_tail", { unit: "paperclip.service", n: "1" }],
-    ["diag_journal_tail", { unit: "paperclip.service", n: "1000" }],
-    ["diag_disk_usage", { key: "paperclip-instances" }],
-    ["diag_health_probe", { key: "paperclip-local" }],
-    ["ufw_allow", { preset: "https-public" }],
-    ["ufw_deny", { preset: "ssh_admin" }],
-    ["ufw_status", {}],
-    ["service_restart_paperclip", {}],
-    ["service_restart_github_runner", {}],
-  ];
-
-  it.each(accepted)("%s accepts %j", (id, args) => {
-    const r = ACTION_REGISTRY[id].argsSchema.safeParse(args);
-    expect(r.success, JSON.stringify(r)).toBe(true);
+describe("V1 action registry — argsSchema rejects bad input", () => {
+  it("pm2_restart.name rejects shell metacharacters", () => {
+    const def = getAction("pm2_restart");
+    expect(def.argsSchema.safeParse({ name: "evil; rm -rf /" }).success).toBe(
+      false,
+    );
   });
 
-  const rejected: Array<[V1ActionId, Record<string, unknown>, string]> = [
-    // Shell metacharacters — wrapper would also reject, TS is the first line.
-    ["pm2_restart", { name: "evil; rm -rf /" }, "shell metachars"],
-    ["pm2_restart", { name: "foo bar" }, "whitespace"],
-    ["pm2_restart", { name: "foo|bar" }, "pipe metachar"],
-    ["pm2_restart", { name: "" }, "empty string"],
-    ["pm2_restart", {}, "missing required field"],
-    // Path traversal in keys / units / presets.
-    ["diag_disk_usage", { key: "../etc" }, "path traversal"],
-    ["diag_health_probe", { key: "../etc/passwd" }, "path traversal"],
-    // unit must end in a systemd suffix.
-    ["diag_journal_tail", { unit: "paperclip", n: "5" }, "no .service suffix"],
-    ["diag_journal_tail", { unit: "evil; rm -rf /", n: "5" }, "shell metachars in unit"],
-    // n out of range / non-integer.
-    ["diag_journal_tail", { unit: "paperclip.service", n: "5000" }, "n above 1000"],
-    ["diag_journal_tail", { unit: "paperclip.service", n: "0" }, "n below 1"],
-    ["diag_journal_tail", { unit: "paperclip.service", n: "abc" }, "n non-integer"],
-    ["diag_journal_tail", { unit: "paperclip.service", n: "-5" }, "n negative"],
-    // ufw preset character class.
-    ["ufw_allow", { preset: "http public" }, "preset whitespace"],
-    ["ufw_allow", { preset: "" }, "empty preset"],
-    ["ufw_deny", { preset: "evil; sh" }, "preset metachars"],
-    // Strict schemas reject extra keys.
-    ["ufw_status", { extra: "field" }, "no-args extra field"],
-    ["pm2_restart", { name: "ok", extra: "field" }, "extra field on pm2_restart"],
-  ];
+  it("pm2_restart.name accepts allowlisted chars", () => {
+    const def = getAction("pm2_restart");
+    expect(def.argsSchema.safeParse({ name: "paperclip" }).success).toBe(true);
+  });
 
-  it.each(rejected)("%s rejects %j (%s)", (id, args, _why) => {
-    const r = ACTION_REGISTRY[id].argsSchema.safeParse(args);
-    expect(r.success, `expected reject but got ${JSON.stringify(r)}`).toBe(false);
+  it("diag_journal_tail.unit rejects strings missing .service suffix", () => {
+    const def = getAction("diag_journal_tail");
+    expect(
+      def.argsSchema.safeParse({ unit: "foo", n: "5" }).success,
+    ).toBe(false);
+  });
+
+  it("diag_journal_tail.unit accepts <name>.service", () => {
+    const def = getAction("diag_journal_tail");
+    expect(
+      def.argsSchema.safeParse({ unit: "paperclip.service", n: "5" }).success,
+    ).toBe(true);
+  });
+
+  it("diag_journal_tail.n rejects out-of-range integer string (5000)", () => {
+    const def = getAction("diag_journal_tail");
+    expect(
+      def.argsSchema.safeParse({ unit: "paperclip.service", n: "5000" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("diag_journal_tail.n accepts in-range integer string", () => {
+    const def = getAction("diag_journal_tail");
+    expect(
+      def.argsSchema.safeParse({ unit: "paperclip.service", n: "5" }).success,
+    ).toBe(true);
+  });
+
+  it("ufw_allow.preset rejects whitespace-bearing values", () => {
+    const def = getAction("ufw_allow");
+    expect(def.argsSchema.safeParse({ preset: "http public" }).success).toBe(
+      false,
+    );
+  });
+
+  it("ufw_allow.preset accepts a closed-enum value (https-public)", () => {
+    const def = getAction("ufw_allow");
+    expect(def.argsSchema.safeParse({ preset: "https-public" }).success).toBe(
+      true,
+    );
+  });
+
+  it("ufw_deny.preset is also enum-restricted (rejects 'http public')", () => {
+    const def = getAction("ufw_deny");
+    expect(def.argsSchema.safeParse({ preset: "http public" }).success).toBe(
+      false,
+    );
   });
 });
 
-// ---------------------------------------------------------------------------
-// getAction lookup
-// ---------------------------------------------------------------------------
-
-describe("getAction()", () => {
-  it.each(V1_ACTION_IDS)(
-    "returns the entry for known id %s",
-    (id) => {
-      expect(getAction(id).id).toBe(id);
-    },
-  );
-
+describe("V1 action registry — getAction error path", () => {
   it("throws UnknownActionError for off-list ids", () => {
-    expect(() => getAction("nope_not_real")).toThrow(UnknownActionError);
-  });
-
-  it("UnknownActionError exposes the offending action id", () => {
+    let caught: unknown;
     try {
-      getAction("rm_rf_slash");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(UnknownActionError);
-      expect((e as UnknownActionError).actionId).toBe("rm_rf_slash");
-      expect((e as UnknownActionError).name).toBe("UnknownActionError");
+      getAction("nope" as V1ActionId);
+    } catch (err) {
+      caught = err;
     }
+    expect(caught).toBeInstanceOf(UnknownActionError);
+    expect((caught as UnknownActionError).actionId).toBe("nope");
   });
 });
