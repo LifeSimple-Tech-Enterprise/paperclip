@@ -1,83 +1,109 @@
 /**
- * D1 — Routine "did X" Discord notifications via webhook.
+ * HermesAgent Stage D, sub-stage D1 (LIF-238).
  *
- * Reads DISCORD_WEBHOOK_URL from the environment. No-ops silently if the var is
- * unset so that the module can be imported in test/staging environments without a
- * live webhook URL.
+ * notifyExecuted — post a routine "did X" audit ping to Discord via
+ * DISCORD_WEBHOOK_URL. No-op when the env var is unset, so unit / integration
+ * environments without secrets never reach the production channel.
+ *
+ * Surface: single async function `notifyExecuted` plus its input type.
+ * No other public exports.
+ *
+ * Used by the Stage C executor after a routine action wrapper exits, to
+ * append a human-visible audit ping alongside the per-issue audit comment.
+ * Best-effort: failures are logged but never thrown (the action has already
+ * run; webhook flake must not corrupt the executor's exit code).
  */
 
-export interface NotifyConfig {
-  webhookUrl?: string;
+const WEBHOOK_URL_ENV = "DISCORD_WEBHOOK_URL";
+const NOTIFY_TIMEOUT_MS = 5_000;
+const LOG_EXCERPT_MAX = 1_500;
+const COLOR_SUCCESS = 0x22c55e;
+const COLOR_FAILURE = 0xef4444;
+
+export interface NotifyExecutedInput {
+  /** V1 action id (e.g. `service_restart_paperclip`). */
+  actionId: string;
+  /** Action arguments, as resolved by the registry argsSchema. */
+  args: Record<string, string>;
+  /** Wrapper exit code (0 == success). */
+  exitCode: number;
+  /** Tail of the wrapper log; truncated to ~1.5 KB before sending. */
+  logExcerpt: string;
 }
 
-function buildNotifyPayload(
-  actionId: string,
-  args: Record<string, string>,
-  exitCode: number,
-  logExcerpt: string,
-): object {
-  const success = exitCode === 0;
-  const argsText = Object.entries(args)
-    .map(([k, v]) => `\`${k}\`=\`${v}\``)
-    .join(", ") || "_none_";
+export async function notifyExecuted(input: NotifyExecutedInput): Promise<void> {
+  const url = process.env[WEBHOOK_URL_ENV];
+  if (!url) return;
 
-  const excerptBlock =
-    logExcerpt.trim().length > 0
-      ? `\`\`\`\n${logExcerpt.slice(0, 1800)}\n\`\`\``
-      : "_no output_";
+  const payload = buildExecutedPayload(input);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), NOTIFY_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.error(
+        `[hermes:notify] Discord webhook returned HTTP ${res.status}: ${text.slice(0, 200)}`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[hermes:notify] Webhook POST failed: ${(err as Error).message}`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+interface DiscordWebhookPayload {
+  username: string;
+  embeds: {
+    title: string;
+    color: number;
+    fields: { name: string; value: string; inline?: boolean }[];
+    timestamp: string;
+  }[];
+}
+
+function buildExecutedPayload(input: NotifyExecutedInput): DiscordWebhookPayload {
+  const success = input.exitCode === 0;
+  const status = success
+    ? "✅ success"
+    : `❌ failure (exit=${input.exitCode})`;
+
+  const argsList =
+    Object.entries(input.args)
+      .map(([k, v]) => `**${k}**: \`${v}\``)
+      .join("\n") || "_(no args)_";
+
+  const excerpt =
+    input.logExcerpt.length > LOG_EXCERPT_MAX
+      ? input.logExcerpt.slice(0, LOG_EXCERPT_MAX) + "\n…(truncated)"
+      : input.logExcerpt;
 
   return {
+    username: "HermesAgent",
     embeds: [
       {
-        title: `${success ? "✅" : "❌"} HermesAgent executed \`${actionId}\``,
-        color: success ? 3066993 : 15158332,
+        title: `Hermes executed: ${input.actionId}`,
+        color: success ? COLOR_SUCCESS : COLOR_FAILURE,
         fields: [
-          { name: "Action", value: `\`${actionId}\``, inline: true },
-          { name: "Exit code", value: `\`${exitCode}\``, inline: true },
-          { name: "Args", value: argsText, inline: false },
-          { name: "Log excerpt", value: excerptBlock, inline: false },
+          { name: "Status", value: status, inline: true },
+          { name: "Action", value: input.actionId, inline: true },
+          { name: "Args", value: argsList },
+          {
+            name: "Log excerpt",
+            value: excerpt ? "```" + excerpt + "```" : "_(empty)_",
+          },
         ],
-        footer: { text: "HermesAgent audit trail" },
         timestamp: new Date().toISOString(),
       },
     ],
   };
 }
-
-/**
- * Post a routine "action executed" notification to Discord.
- *
- * @param actionId   The registry action id that was run.
- * @param args       The args map passed to the action.
- * @param exitCode   Shell exit code of the wrapper (0 = success).
- * @param logExcerpt Tail of the action log (truncated to 1800 chars in the embed).
- * @param cfg        Optional overrides; defaults to reading process.env.
- */
-export async function notifyExecuted(
-  actionId: string,
-  args: Record<string, string>,
-  exitCode: number,
-  logExcerpt: string,
-  cfg?: NotifyConfig,
-): Promise<void> {
-  const webhookUrl = cfg?.webhookUrl ?? process.env["DISCORD_WEBHOOK_URL"];
-  if (!webhookUrl) {
-    return;
-  }
-
-  const payload = buildNotifyPayload(actionId, args, exitCode, logExcerpt);
-
-  const res = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok && res.status !== 204) {
-    throw new Error(
-      `Discord webhook returned unexpected status ${res.status} for notifyExecuted`,
-    );
-  }
-}
-
-export { buildNotifyPayload as _buildNotifyPayload };

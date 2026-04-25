@@ -1,239 +1,278 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import {
-  requestApproval,
-  _buildApprovalRequestPayload,
-  _createPaperclipApproval,
-} from "./approval.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requestApproval } from "./approval.js";
 
-// ─── unit tests for payload builder ─────────────────────────────────────────
+const API_URL = "http://api.test";
+const PUBLIC_URL = "https://app.test";
+const WEBHOOK = "https://discord.example/webhook/abc";
+const COMPANY_ID = "11111111-1111-1111-1111-111111111111";
+const AGENT_ID = "22222222-2222-2222-2222-222222222222";
+const APPROVAL_ID = "approval-xyz";
+const REQUIRED_ENV_VARS = [
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_API_KEY",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_AGENT_ID",
+] as const;
 
-describe("_buildApprovalRequestPayload", () => {
-  it("embeds the approval ID in the footer", () => {
-    const payload = _buildApprovalRequestPayload(
-      "ufw_allow",
-      { preset: "web" },
-      "approval-123",
-      15,
-    ) as { embeds: Array<{ footer: { text: string }; title: string }> };
-    expect(payload.embeds[0].footer.text).toContain("approval-123");
-    expect(payload.embeds[0].title).toContain("Approval Required");
-  });
+interface MockResponseInit {
+  ok?: boolean;
+  status?: number;
+  json?: unknown;
+  text?: string;
+}
 
-  it("includes a LINK button when paperclipPublicUrl is provided", () => {
-    const payload = _buildApprovalRequestPayload(
-      "ufw_allow",
-      {},
-      "approval-456",
-      15,
-      "https://paperclip.example.com",
-    ) as {
-      components?: Array<{ components: Array<{ style: number; url: string }> }>;
-    };
-    expect(payload.components).toBeDefined();
-    const btn = payload.components![0].components[0];
-    expect(btn.style).toBe(5);
-    expect(btn.url).toContain("approval-456");
-  });
-
-  it("omits components when no public URL is set", () => {
-    const payload = _buildApprovalRequestPayload(
-      "ufw_deny",
-      {},
-      "approval-789",
-      15,
-    ) as { components?: unknown };
-    expect(payload.components).toBeUndefined();
-  });
-
-  it("shows TTL in the embed fields", () => {
-    const payload = _buildApprovalRequestPayload("ufw_allow", {}, "id", 15) as {
-      embeds: Array<{ fields: Array<{ name: string; value: string }> }>;
-    };
-    const ttlField = payload.embeds[0].fields.find((f) => f.name === "TTL");
-    expect(ttlField?.value).toContain("15 min");
-    expect(ttlField?.value).toContain("DENY");
-  });
-});
-
-// ─── integration-style tests (fetch mocked) ─────────────────────────────────
-
-describe("requestApproval", () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-  const BASE_CFG = {
-    webhookUrl: "https://discord.test/webhook",
-    paperclipApiUrl: "http://localhost:9999",
-    companyId: "company-abc",
-    ttlMs: 500,
-    pollIntervalMs: 50,
+function mockResponse(init: MockResponseInit = {}) {
+  return {
+    ok: init.ok ?? true,
+    status: init.status ?? 200,
+    json: () => Promise.resolve(init.json ?? {}),
+    text: () => Promise.resolve(init.text ?? ""),
   };
+}
+
+function createApprovalResp(status = "pending", decidedByUserId?: string) {
+  return mockResponse({
+    json: { id: APPROVAL_ID, status, decidedByUserId },
+  });
+}
+
+function pollResp(status: string, decidedByUserId?: string) {
+  return mockResponse({
+    json: { id: APPROVAL_ID, status, decidedByUserId },
+  });
+}
+
+function isApprovalCreate(url: string, init: { method?: string }) {
+  return (
+    url.includes(`/api/companies/${COMPANY_ID}/approvals`) &&
+    init.method === "POST"
+  );
+}
+function isApprovalPoll(url: string, init: { method?: string }) {
+  return (
+    url.endsWith(`/api/approvals/${APPROVAL_ID}`) &&
+    (!init.method || init.method === "GET")
+  );
+}
+function isWebhook(url: string) {
+  return url.startsWith(WEBHOOK);
+}
+
+describe("requestApproval (LIF-238 D2/D3)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let savedEnv: Record<string, string | undefined>;
 
   beforeEach(() => {
-    fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    originalFetch = globalThis.fetch;
+    savedEnv = {
+      PAPERCLIP_API_URL: process.env.PAPERCLIP_API_URL,
+      PAPERCLIP_API_KEY: process.env.PAPERCLIP_API_KEY,
+      PAPERCLIP_COMPANY_ID: process.env.PAPERCLIP_COMPANY_ID,
+      PAPERCLIP_AGENT_ID: process.env.PAPERCLIP_AGENT_ID,
+      PAPERCLIP_PUBLIC_URL: process.env.PAPERCLIP_PUBLIC_URL,
+      PAPERCLIP_TASK_ID: process.env.PAPERCLIP_TASK_ID,
+      DISCORD_WEBHOOK_URL: process.env.DISCORD_WEBHOOK_URL,
+      HERMES_APPROVAL_TTL_MS: process.env.HERMES_APPROVAL_TTL_MS,
+      HERMES_APPROVAL_POLL_MS: process.env.HERMES_APPROVAL_POLL_MS,
+    };
+    process.env.PAPERCLIP_API_URL = API_URL;
+    process.env.PAPERCLIP_API_KEY = "test-key";
+    process.env.PAPERCLIP_COMPANY_ID = COMPANY_ID;
+    process.env.PAPERCLIP_AGENT_ID = AGENT_ID;
+    process.env.PAPERCLIP_PUBLIC_URL = PUBLIC_URL;
+    process.env.PAPERCLIP_TASK_ID = "issue-123";
+    delete process.env.DISCORD_WEBHOOK_URL;
+    // Tight test hooks so the polling loop completes in milliseconds.
+    process.env.HERMES_APPROVAL_TTL_MS = "200";
+    process.env.HERMES_APPROVAL_POLL_MS = "5";
+    vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    globalThis.fetch = originalFetch;
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    vi.restoreAllMocks();
   });
 
-  function mockCreateApproval(id = "approval-001") {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 201,
-      json: async () => ({ id }),
+  it("creates approval, posts Discord notify, polls until approved (happy path)", async () => {
+    process.env.DISCORD_WEBHOOK_URL = WEBHOOK;
+    let pollCount = 0;
+    const fetchMock = vi.fn(async (url: string, init: { method?: string }) => {
+      if (isApprovalCreate(url, init)) {
+        return createApprovalResp("pending");
+      }
+      if (isWebhook(url)) {
+        return mockResponse();
+      }
+      if (isApprovalPoll(url, init)) {
+        pollCount += 1;
+        // Stay pending for the first poll, then approve.
+        if (pollCount < 2) return pollResp("pending");
+        return pollResp("approved", "user-9");
+      }
+      throw new Error(`Unexpected URL: ${url}`);
     });
-  }
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
-  function mockWebhookPost() {
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 204 });
-  }
-
-  function mockPollResult(status: string, decidedByUserId: string | null = null) {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ id: "approval-001", status, decidedByUserId }),
+    const result = await requestApproval({
+      actionId: "ufw_allow",
+      args: { port: "443" },
+      requestedBy: "actor-1",
     });
-  }
 
-  it("throws when companyId is missing", async () => {
-    await expect(
-      requestApproval("ufw_allow", {}, "agent-x", {
-        ...BASE_CFG,
-        companyId: "",
-      }),
-    ).rejects.toThrow("PAPERCLIP_COMPANY_ID");
-  });
+    expect(result).toEqual({
+      approved: true,
+      approvedBy: "user-9",
+      tokenId: APPROVAL_ID,
+    });
 
-  it("creates approval then posts to Discord", async () => {
-    mockCreateApproval("approval-001");
-    mockWebhookPost();
-    mockPollResult("approved", "user-bob");
-
-    const result = await requestApproval("ufw_allow", { preset: "web" }, "agent-x", BASE_CFG);
-
-    // First call: create approval
-    const [createUrl, createOpts] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(createUrl).toContain("/api/companies/company-abc/approvals");
-    expect(createOpts.method).toBe("POST");
-    const createBody = JSON.parse(createOpts.body as string) as {
-      type: string;
-      payload: { actionId: string };
+    // Approval create body shape.
+    const createCall = fetchMock.mock.calls.find((c) =>
+      isApprovalCreate(c[0] as string, c[1] as { method?: string }),
+    )!;
+    const createInit = createCall[1] as {
+      headers: Record<string, string>;
+      body: string;
     };
+    expect(createInit.headers.Authorization).toBe("Bearer test-key");
+    const createBody = JSON.parse(createInit.body);
     expect(createBody.type).toBe("request_board_approval");
-    expect(createBody.payload.actionId).toBe("ufw_allow");
+    expect(createBody.requestedByAgentId).toBe(AGENT_ID);
+    expect(createBody.issueIds).toEqual(["issue-123"]);
+    expect(createBody.payload.hermes.actionId).toBe("ufw_allow");
+    expect(createBody.payload.hermes.args).toEqual({ port: "443" });
+    expect(createBody.payload.hermes.requestedBy).toBe("actor-1");
 
-    // Second call: Discord webhook
-    const [webhookUrl] = fetchMock.mock.calls[1] as [string];
-    expect(webhookUrl).toBe("https://discord.test/webhook");
+    // Discord embed deep-link uses PAPERCLIP_PUBLIC_URL.
+    const webhookCall = fetchMock.mock.calls.find((c) =>
+      isWebhook(c[0] as string),
+    )!;
+    const webhookBody = JSON.parse(
+      (webhookCall[1] as { body: string }).body,
+    );
+    expect(webhookBody.embeds[0].description).toContain(
+      `${PUBLIC_URL}/approvals/${APPROVAL_ID}`,
+    );
+    expect(webhookBody.embeds[0].title).toBe("Approval needed: ufw_allow");
 
-    expect(result).toEqual({ approved: true, approvedBy: "user-bob", tokenId: "approval-001" });
+    // At least one poll occurred.
+    expect(pollCount).toBeGreaterThanOrEqual(2);
   });
 
-  it("returns approved=true with approvedBy when approval is approved", async () => {
-    mockCreateApproval();
-    mockWebhookPost();
-    mockPollResult("approved", "user-alice");
+  it("returns approved=false when the approval is rejected", async () => {
+    const fetchMock = vi.fn(async (url: string, init: { method?: string }) => {
+      if (isApprovalCreate(url, init)) return createApprovalResp("pending");
+      if (isApprovalPoll(url, init)) return pollResp("rejected", "user-7");
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
-    const result = await requestApproval("ufw_allow", {}, "agent-x", BASE_CFG);
-    expect(result.approved).toBe(true);
-    expect(result.approvedBy).toBe("user-alice");
-    expect(result.tokenId).toBe("approval-001");
-  });
+    const result = await requestApproval({
+      actionId: "ufw_allow",
+      args: { port: "443" },
+      requestedBy: "actor-1",
+    });
 
-  it("returns approved=false when approval is rejected", async () => {
-    mockCreateApproval();
-    mockWebhookPost();
-    mockPollResult("rejected");
-
-    const result = await requestApproval("ufw_deny", {}, "agent-x", BASE_CFG);
     expect(result.approved).toBe(false);
-    expect(result.approvedBy).toBeUndefined();
+    expect(result.approvedBy).toBe("user-7");
+    expect(result.tokenId).toBe(APPROVAL_ID);
   });
 
-  it("returns approved=false on timeout (default deny)", async () => {
-    mockCreateApproval();
-    mockWebhookPost();
-    // Poll always returns pending → TTL exhausts
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ id: "approval-001", status: "pending", decidedByUserId: null }),
-    });
+  it("default-denies on TTL timeout (status stays pending)", async () => {
+    process.env.HERMES_APPROVAL_TTL_MS = "100";
+    process.env.HERMES_APPROVAL_POLL_MS = "20";
 
-    const result = await requestApproval("ufw_allow", {}, "agent-x", {
-      ...BASE_CFG,
-      ttlMs: 120,
-      pollIntervalMs: 50,
+    const fetchMock = vi.fn(async (url: string, init: { method?: string }) => {
+      if (isApprovalCreate(url, init)) return createApprovalResp("pending");
+      if (isApprovalPoll(url, init)) return pollResp("pending");
+      throw new Error(`Unexpected URL: ${url}`);
     });
-    expect(result.approved).toBe(false);
-    expect(result.tokenId).toBe("approval-001");
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    const start = Date.now();
+    const result = await requestApproval({
+      actionId: "ufw_allow",
+      args: { port: "443" },
+      requestedBy: "actor-1",
+    });
+    const elapsed = Date.now() - start;
+
+    expect(result).toEqual({ approved: false, tokenId: APPROVAL_ID });
+    // Should have waited at least ~TTL but not forever.
+    expect(elapsed).toBeGreaterThanOrEqual(90);
+    expect(elapsed).toBeLessThan(2_000);
+    // Polled at least once.
+    const polls = fetchMock.mock.calls.filter((c) =>
+      isApprovalPoll(c[0] as string, c[1] as { method?: string }),
+    );
+    expect(polls.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("still returns a result even when Discord webhook is not set", async () => {
-    mockCreateApproval();
-    mockPollResult("approved", "user-bob");
+  it.each(REQUIRED_ENV_VARS)(
+    "throws when required env %s is missing",
+    async (missing) => {
+      delete process.env[missing];
+      const fetchMock = vi.fn();
+      globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
-    const result = await requestApproval("ufw_allow", {}, "agent-x", {
-      ...BASE_CFG,
-      webhookUrl: undefined,
+      await expect(
+        requestApproval({
+          actionId: "ufw_allow",
+          args: {},
+          requestedBy: "actor-1",
+        }),
+      ).rejects.toThrow(missing);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still creates+polls the approval when DISCORD_WEBHOOK_URL is unset", async () => {
+    delete process.env.DISCORD_WEBHOOK_URL;
+
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (url: string, init: { method?: string }) => {
+      calls.push(url);
+      if (isApprovalCreate(url, init)) return createApprovalResp("pending");
+      if (isApprovalPoll(url, init)) return pollResp("approved", "user-1");
+      throw new Error(`Unexpected URL: ${url}`);
     });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    const result = await requestApproval({
+      actionId: "ufw_allow",
+      args: {},
+      requestedBy: "actor-1",
+    });
+
     expect(result.approved).toBe(true);
+    // No webhook call should ever happen.
+    expect(calls.some((u) => isWebhook(u))).toBe(false);
+    // Both API calls (create + poll) happened.
+    expect(calls.some((u) => u.includes("/api/companies/"))).toBe(true);
+    expect(calls.some((u) => u.endsWith(`/api/approvals/${APPROVAL_ID}`))).toBe(
+      true,
+    );
   });
 
-  it("throws when Paperclip approval creation fails", async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 422,
-      text: async () => "invalid type",
+  it("throws when the approval-create endpoint returns non-2xx", async () => {
+    const fetchMock = vi.fn(async (url: string, init: { method?: string }) => {
+      if (isApprovalCreate(url, init)) {
+        return mockResponse({ ok: false, status: 500, text: "boom" });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
     });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
     await expect(
-      requestApproval("ufw_allow", {}, "agent-x", BASE_CFG),
-    ).rejects.toThrow("422");
-  });
-});
-
-// ─── _createPaperclipApproval unit test ──────────────────────────────────────
-
-describe("_createPaperclipApproval", () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("returns the approval id from the API response", async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 201,
-      json: async () => ({ id: "the-approval-id" }),
-    });
-    const id = await _createPaperclipApproval(
-      "http://localhost:3100",
-      "co-1",
-      "ufw_allow",
-      { preset: "web" },
-      "agent-1",
-    );
-    expect(id).toBe("the-approval-id");
-  });
-
-  it("sends requestedByAgentId in the body", async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 201,
-      json: async () => ({ id: "x" }),
-    });
-    await _createPaperclipApproval("http://localhost:3100", "co-1", "act", {}, "agent-7");
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as {
-      requestedByAgentId: string;
-    };
-    expect(body.requestedByAgentId).toBe("agent-7");
+      requestApproval({
+        actionId: "ufw_allow",
+        args: {},
+        requestedBy: "actor-1",
+      }),
+    ).rejects.toThrow(/HTTP 500/);
   });
 });
