@@ -40,3 +40,13 @@ export {
   handleExecutionFailure,
   type FailureSinkContext,
 } from "./failure-handler.js";
+
+export {
+  checkAndRecord,
+  RateLimitError,
+  DEFAULT_MAX_PER_HOUR,
+  WINDOW_MS,
+  DEFAULT_RATE_LIMIT_PATH,
+  type RateLimitStore,
+  type RateLimitOptions,
+} from "./rate-limit.js";

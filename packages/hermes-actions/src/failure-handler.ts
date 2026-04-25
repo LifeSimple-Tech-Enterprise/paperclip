@@ -16,7 +16,7 @@
 
 import type { ExecutionResult } from "./executor.js";
 import { notifyExecutionFailure } from "./notify.js";
-import { formatExecutionResultComment } from "@paperclipai/hermes-agent/audit";
+import { formatExecutionResultComment } from "./audit.js";
 
 export interface FailureSinkContext {
   paperclipApiUrl: string;

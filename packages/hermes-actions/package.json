@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "license": "MIT",
-  "description": "HermesAgent V1 action layer: typed registry, sudo-wrapper executor, hash-chained audit journal, and failure handler. Bridges a validated HermesIntent (from @paperclipai/hermes-agent) to the privileged shell wrappers installed by LIF-237.",
+  "description": "HermesAgent V1 action layer: typed registry, sudo-wrapper executor, hash-chained audit journal, and failure handler. Bridges a validated HermesIntent to the privileged shell wrappers installed by LIF-237.",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -21,7 +21,6 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "@paperclipai/hermes-agent": "workspace:*",
     "zod": "^3.24.2"
   },
   "devDependencies": {
