@@ -25,7 +25,10 @@ import { buildSystemPrompt, buildUserMessage } from "./prompt.js";
 import {
   formatIntentAcceptedComment,
   formatIntentRejectedComment,
+  formatExecutionResultComment,
 } from "./audit.js";
+import { executeIntent } from "@paperclipai/hermes-actions/executor";
+import { handleExecutionFailure } from "@paperclipai/hermes-actions/failure-handler";
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -255,8 +258,7 @@ async function main(): Promise<void> {
   const result = parseIntent(ollamaRaw);
 
   // -------------------------------------------------------------------------
-  // Step 7: Post audit comment (HEARTBEAT.md §6, §7)
-  // Stage C dispatch is not yet wired — post intent as comment and stop.
+  // Step 7: Post audit comment (accepted or rejected intent).
   // -------------------------------------------------------------------------
   const commentBody = result.ok
     ? formatIntentAcceptedComment(result)
@@ -264,7 +266,39 @@ async function main(): Promise<void> {
 
   await postComment(commentBody);
 
-  // Exit 0: audit comment successfully posted (accepted or rejected intent).
+  // -------------------------------------------------------------------------
+  // Step 8: Dispatch (Stage C wiring — LIF-248).
+  // Only execute when the intent was accepted.
+  // -------------------------------------------------------------------------
+  if (!result.ok) {
+    // Intent rejected — audit comment already posted above.
+    process.exit(0);
+  }
+
+  const exec = await executeIntent(result, {
+    issueId: TASK_ID!,
+    isApproved: () => false, // Stage D will replace with real approval probe.
+  });
+
+  await postComment(
+    formatExecutionResultComment({
+      actionId: result.intent.action_id,
+      result: exec,
+    }),
+  );
+
+  if (exec.code === "wrapper_nonzero") {
+    await handleExecutionFailure(
+      { issueId: TASK_ID!, actionId: result.intent.action_id, result: exec },
+      {
+        paperclipApiUrl: API_URL,
+        paperclipApiKey: API_KEY,
+        runId: RUN_ID,
+      },
+    );
+  }
+
+  // Exit 0: audit comment successfully posted (any path).
   process.exit(0);
 }
 
