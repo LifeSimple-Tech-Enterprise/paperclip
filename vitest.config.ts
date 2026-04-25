@@ -7,6 +7,7 @@ export default defineConfig({
       "packages/adapter-utils",
       "packages/adapters/codex-local",
       "packages/adapters/opencode-local",
+      "packages/hermes-agent",
       "server",
       "ui",
       "cli",
