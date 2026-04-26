@@ -30,5 +30,9 @@ export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
+export {
+  PG_STAT_STATEMENTS_POSTGRES_FLAGS,
+  ensurePgStatStatementsExtension,
+} from "./migration-runtime.js";
 export { issueRelations } from "./schema/issue_relations.js";
 export * from "./schema/index.js";

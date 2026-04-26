@@ -24,13 +24,13 @@ type EmbeddedPostgresCtor = new (opts: {
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
 
-const PG_STAT_STATEMENTS_POSTGRES_FLAGS = [
+export const PG_STAT_STATEMENTS_POSTGRES_FLAGS: string[] = [
   "-c", "shared_preload_libraries=pg_stat_statements",
   "-c", "pg_stat_statements.track=top",
   "-c", "pg_stat_statements.max=5000",
 ];
 
-async function ensurePgStatStatementsExtension(connectionString: string): Promise<void> {
+export async function ensurePgStatStatementsExtension(connectionString: string): Promise<void> {
   const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
   try {
     await sql.unsafe("create extension if not exists pg_stat_statements");

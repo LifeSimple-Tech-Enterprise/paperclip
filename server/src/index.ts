@@ -15,6 +15,8 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
+  ensurePgStatStatementsExtension,
+  PG_STAT_STATEMENTS_POSTGRES_FLAGS,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
@@ -71,6 +73,7 @@ type EmbeddedPostgresCtor = new (opts: {
   port: number;
   persistent: boolean;
   initdbFlags?: string[];
+  postgresFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -380,6 +383,7 @@ export async function startServer(): Promise<StartedServer> {
           port,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          postgresFlags: PG_STAT_STATEMENTS_POSTGRES_FLAGS,
           onLog: appendEmbeddedPostgresLog,
           onError: appendEmbeddedPostgresLog,
         });
@@ -422,6 +426,16 @@ export async function startServer(): Promise<StartedServer> {
     }
   
     const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+    if (embeddedPostgresStartedByThisProcess) {
+      // Postmaster was cold-started by us with shared_preload_libraries=pg_stat_statements,
+      // so the extension can be installed/refreshed safely. Skip on the reuse paths because
+      // CREATE EXTENSION fails if the preload was not loaded at postmaster start.
+      try {
+        await ensurePgStatStatementsExtension(embeddedConnectionString);
+      } catch (err) {
+        logger.warn(`Failed to ensure pg_stat_statements extension: ${(err as Error).message}`);
+      }
+    }
     const shouldAutoApplyFirstRunMigrations = !clusterAlreadyInitialized || dbStatus === "created";
     if (shouldAutoApplyFirstRunMigrations) {
       logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
