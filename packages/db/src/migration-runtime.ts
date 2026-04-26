@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
+import postgres from "postgres";
 import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import { resolveDatabaseTarget } from "./runtime-config.js";
@@ -18,9 +19,25 @@ type EmbeddedPostgresCtor = new (opts: {
   port: number;
   persistent: boolean;
   initdbFlags?: string[];
+  postgresFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
+
+const PG_STAT_STATEMENTS_POSTGRES_FLAGS = [
+  "-c", "shared_preload_libraries=pg_stat_statements",
+  "-c", "pg_stat_statements.track=top",
+  "-c", "pg_stat_statements.max=5000",
+];
+
+async function ensurePgStatStatementsExtension(connectionString: string): Promise<void> {
+  const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+  try {
+    await sql.unsafe("create extension if not exists pg_stat_statements");
+  } finally {
+    await sql.end();
+  }
+}
 
 export type MigrationConnection = {
   connectionString: string;
@@ -141,6 +158,7 @@ async function ensureEmbeddedPostgresConnection(
     port: selectedPort,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+    postgresFlags: PG_STAT_STATEMENTS_POSTGRES_FLAGS,
     onLog: logBuffer.append,
     onError: logBuffer.append,
   });
@@ -171,8 +189,11 @@ async function ensureEmbeddedPostgresConnection(
   const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/postgres`;
   await ensurePostgresDatabase(adminConnectionString, "paperclip");
 
+  const paperclipConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`;
+  await ensurePgStatStatementsExtension(paperclipConnectionString);
+
   return {
-    connectionString: `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`,
+    connectionString: paperclipConnectionString,
     source: `embedded-postgres@${selectedPort}`,
     stop: async () => {
       await instance.stop();
