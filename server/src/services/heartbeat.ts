@@ -1755,7 +1755,6 @@ export function heartbeatService(db: Db) {
         id: issues.id,
         identifier: issues.identifier,
         title: issues.title,
-        description: issues.description,
         status: issues.status,
         priority: issues.priority,
         projectId: issues.projectId,
@@ -4023,7 +4022,6 @@ export function heartbeatService(db: Db) {
           id: issueContext.id,
           identifier: issueContext.identifier,
           title: issueContext.title,
-          description: issueContext.description,
           status: issueContext.status,
           priority: issueContext.priority,
           projectId: issueContext.projectId,
@@ -4115,25 +4113,9 @@ export function heartbeatService(db: Db) {
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
-    // LIF-278: surface task identity on runtimeConfig so adapters that read task
-    // fields from `ctx.config` (e.g. hermes-paperclip-adapter@0.2.0) can render
-    // their prompt templates without an upstream patch. Adapters following the
-    // canonical convention should keep reading `ctx.context.taskId/...`.
     const runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
-      taskId:
-        readNonEmptyString(context.taskId) ??
-        issueRef?.id ??
-        issueId ??
-        undefined,
-      taskTitle: issueRef?.title ?? undefined,
-      taskBody: issueRef?.description ?? undefined,
-      commentId:
-        readNonEmptyString(context.commentId) ??
-        readNonEmptyString(context.wakeCommentId) ??
-        undefined,
-      wakeReason: readNonEmptyString(context.wakeReason) ?? undefined,
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
