@@ -147,6 +147,10 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     logBytes: null,
     logSha256: null,
     logCompressed: false,
+    lastOutputAt: null,
+    lastOutputSeq: 0,
+    lastOutputStream: null,
+    lastOutputBytes: null,
     errorCode: null,
     externalRunId: null,
     processPid: null,
@@ -295,6 +299,7 @@ const dashboard: DashboardSummary = {
     pausedAgents: 0,
     pausedProjects: 0,
   },
+  runActivity: [],
 };
 
 describe("inbox helpers", () => {
@@ -610,7 +615,9 @@ describe("inbox helpers", () => {
     expect(
       buildInboxKeyboardNavEntries(groupedSections, new Set(), new Set()).map((entry) => entry.type === "top"
         ? entry.itemKey
-        : entry.issueId),
+        : entry.type === "child"
+          ? entry.issueId
+          : entry.groupKey),
     ).toEqual([
       `workspace:default:${getInboxWorkItemKey({ kind: "issue", timestamp: 2, issue: parentIssue })}`,
       childIssue.id,
@@ -619,10 +626,53 @@ describe("inbox helpers", () => {
     expect(
       buildInboxKeyboardNavEntries(groupedSections, new Set(), new Set([parentIssue.id])).map((entry) => entry.type === "top"
         ? entry.itemKey
-        : entry.issueId),
+        : entry.type === "child"
+          ? entry.issueId
+          : entry.groupKey),
     ).toEqual([
       `workspace:default:${getInboxWorkItemKey({ kind: "issue", timestamp: 2, issue: parentIssue })}`,
     ]);
+  });
+
+  it("emits a group nav entry for labeled groups and omits children when the group is collapsed", () => {
+    const visibleIssue = makeIssue("visible", true);
+    const hiddenIssue = makeIssue("hidden", true);
+    const groupedSections = [
+      {
+        key: "priority:high",
+        label: "High priority",
+        displayItems: [{ kind: "issue", timestamp: 3, issue: visibleIssue } satisfies InboxWorkItem],
+        childrenByIssueId: new Map(),
+      },
+      {
+        key: "priority:medium",
+        label: "Medium priority",
+        displayItems: [{ kind: "issue", timestamp: 2, issue: hiddenIssue } satisfies InboxWorkItem],
+        childrenByIssueId: new Map(),
+      },
+    ];
+
+    const expanded = buildInboxKeyboardNavEntries(groupedSections, new Set(), new Set());
+    expect(expanded.map((entry) => entry.type)).toEqual(["group", "top", "group", "top"]);
+    expect(expanded[0]).toEqual({
+      type: "group",
+      groupKey: "priority:high",
+      label: "High priority",
+      collapsed: false,
+    });
+
+    const collapsed = buildInboxKeyboardNavEntries(
+      groupedSections,
+      new Set(["priority:medium"]),
+      new Set(),
+    );
+    expect(collapsed.map((entry) => entry.type)).toEqual(["group", "top", "group"]);
+    expect(collapsed[2]).toEqual({
+      type: "group",
+      groupKey: "priority:medium",
+      label: "Medium priority",
+      collapsed: true,
+    });
   });
 
   it("sorts self-touched issues without external comments by updatedAt", () => {
@@ -791,6 +841,7 @@ describe("inbox helpers", () => {
           labels: [],
           projects: [],
           workspaces: [],
+          liveOnly: false,
           hideRoutineExecutions: true,
         },
       }).map((issue) => issue.id),
@@ -810,6 +861,7 @@ describe("inbox helpers", () => {
           labels: [],
           projects: [],
           workspaces: [],
+          liveOnly: false,
           hideRoutineExecutions: true,
         },
       }),
@@ -829,6 +881,7 @@ describe("inbox helpers", () => {
           labels: [],
           projects: [],
           workspaces: [],
+          liveOnly: false,
           hideRoutineExecutions: true,
         },
       }),
@@ -894,6 +947,7 @@ describe("inbox helpers", () => {
         labels: ["label-1"],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
+        liveOnly: true,
         hideRoutineExecutions: false,
       },
     });
@@ -908,6 +962,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: [],
         workspaces: [],
+        liveOnly: false,
         hideRoutineExecutions: true,
       },
     });
@@ -923,6 +978,7 @@ describe("inbox helpers", () => {
         labels: ["label-1"],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
+        liveOnly: true,
         hideRoutineExecutions: false,
       },
     });
@@ -937,6 +993,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: [],
         workspaces: [],
+        liveOnly: false,
         hideRoutineExecutions: true,
       },
     });
@@ -954,6 +1011,7 @@ describe("inbox helpers", () => {
         labels: null,
         projects: ["project-1"],
         workspaces: ["workspace-1", false],
+        liveOnly: "yes",
         hideRoutineExecutions: "yes",
       },
     }));
@@ -969,6 +1027,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
+        liveOnly: false,
         hideRoutineExecutions: false,
       },
     });

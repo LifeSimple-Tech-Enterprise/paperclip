@@ -1,138 +1,123 @@
 # Agent Instruction Templates
 
-Use this reference when hiring or creating agents. Start from an existing pattern when the requested role is close, then adapt the text to the company, reporting line, adapter, workspace, permissions, and task type.
+Use this reference from step 4 of the hiring workflow. It lists the current role templates, when to use each, and how to decide between an exact template, an adjacent template, or the generic fallback.
 
-These templates are intentionally separate from the main Paperclip heartbeat skill so the core wake procedure stays short.
+These templates are deliberately separate from the main Paperclip heartbeat skill and from `SKILL.md` in this folder — the core wake procedure and hiring workflow stay short, and role-specific depth lives here.
+
+## Decision flow
+
+```
+role match?
+├── exact template exists       → copy it, replace placeholders, submit
+├── adjacent template is close  → copy closest, adapt deliberately (charter, lenses, sections)
+└── no template is close        → use references/baseline-role-guide.md to build from scratch
+```
+
+In the hire comment, state which path you took so the board can audit the reasoning.
 
 ## Index
 
-| Template | Use when hiring | Typical adapter |
-|---|---|---|
-| `Coder` | Software engineers who implement code, debug issues, write tests, and coordinate with QA/CTO | `codex_local`, `claude_local`, `cursor`, or another coding adapter |
-| `QA` | QA engineers who reproduce bugs, validate fixes, capture screenshots, and report actionable findings | `claude_local` or another browser-capable adapter |
+| Template | Use when hiring | Typical adapter | Lens density |
+|---|---|---|---|
+| [`Coder`](agents/coder.md) | Software engineers who implement code, debug issues, write tests, and coordinate with QA/CTO | `codex_local`, `claude_local`, `cursor`, or another coding adapter | Low (operational) |
+| [`QA`](agents/qa.md) | QA engineers who reproduce bugs, validate fixes, capture screenshots, and report actionable findings | `claude_local` or another browser-capable adapter | Low (operational) |
+| [`UX Designer`](agents/uxdesigner.md) | Product designers who produce UX specs, review interface quality, and evolve the design system | `codex_local`, `claude_local`, or another adapter with repo/design context | High (lens-heavy) |
+| [`SecurityEngineer`](agents/securityengineer.md) | Security engineers who threat-model, review auth/crypto/input handling, triage supply-chain and LLM-agent risk, and drive remediations | `claude_local`, `codex_local`, or another adapter with repo context | High (lens-heavy) |
 
-## How To Apply A Template
+If you are hiring a role that is not in this index, do not force a fit. Use the adjacent-template path when one is genuinely close, or the generic fallback when none is.
 
-1. Copy the template into the new agent's instruction bundle, usually `AGENTS.md`. For hire requests using local managed-bundle adapters, this usually means setting the adapted template as `adapterConfig.promptTemplate`; Paperclip materializes it into `AGENTS.md`.
-2. Replace placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and URLs.
-3. Remove tools or workflows the target adapter cannot use.
-4. Keep the Paperclip heartbeat requirement and task-comment requirement.
-5. Add role-specific skills or reference files only when they are actually installed or bundled.
+### When to use each template
 
-## Template: Coder
+- **Coder** — the hire primarily writes or edits code against existing conventions, runs focused tests, and hands off to QA. Pick Coder when the charter is "ship code that passes review and CI." Avoid for pure strategy, design, or security review.
+- **QA** — the hire reproduces bugs in a running product, exercises flows in a browser or test harness, and produces evidence-grounded pass/fail reports. Pick QA when the charter is "confirm the user experience matches intent." Avoid for agents that only run static linters or unit tests — that belongs with a Coder.
+- **UX Designer** — the hire is accountable for the user experience and visual quality of product work. Pick UXDesigner when the role must make design calls, push back on unstyled implementations, and evolve the design system. Avoid for agents that only proofread or enforce style-guide consistency without making IA or voice decisions, or that only run automated accessibility scans — those are operational and can use the baseline guide. Content Design proper (microcopy, voice, IA) is a lens-using variant; see the adjacent-template path.
+- **SecurityEngineer** — the hire is accountable for security posture: threat-modeling, reviewing auth/crypto/input handling, supply-chain and LLM-agent risk, and driving remediations with evidence. Pick SecurityEngineer when the role must block insecure designs, propose concrete fixes, and handle sensitive disclosure. Avoid for agents that only run automated scanners with no triage responsibility — those are operational and can use the baseline guide with a short security-lens subset.
 
-Recommended role fields:
+### Lens density: when to keep the full lens list
 
-- `name`: `Coder`, `CodexCoder`, `ClaudeCoder`, or a model/tool-specific name
-- `role`: `engineer`
-- `title`: `Software Engineer`
-- `icon`: `code`
-- `capabilities`: `Implements coding tasks, writes and edits code, debugs issues, adds focused tests, and coordinates with QA and engineering leadership.`
+- **Lens-heavy templates** (UXDesigner, SecurityEngineer) encode expert judgment. The long lens list is the deliverable — keep it intact when hiring the primary domain owner. Drop lens groups only when the hire has an explicitly narrower scope (for example, an "Application Security Reviewer" who will never touch infrastructure or cryptography).
+- **Operational templates** (Coder, QA) stay short on purpose. Do not paste lens lists into them just because the baseline guide recommends lenses. If a Coder-adjacent role genuinely needs lenses (for example, a Performance Engineer), pull a focused 5–10 lens set from the baseline-role-guide examples, not the full SecurityEngineer or UXDesigner set.
 
-`AGENTS.md`:
+## How to apply an exact template
 
-```md
-You are agent {{agentName}} (Coder / Software Engineer) at {{companyName}}.
+1. Open the matching reference in `references/agents/`.
+2. Copy that template into the new agent's instruction bundle (usually `AGENTS.md`). For hire requests using local managed-bundle adapters, set the adapted template as `adapterConfig.promptTemplate`; Paperclip materializes it into `AGENTS.md`.
+3. Replace placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and URLs.
+4. Remove tools or workflows the target adapter cannot use.
+5. Keep the Paperclip heartbeat requirement and the task-comment requirement.
+6. Add role-specific skills or reference files only when they are actually installed or bundled.
+7. Run the pre-submit checklist before opening the hire: `references/draft-review-checklist.md`.
 
-When you wake up, follow the Paperclip skill. It contains the full heartbeat procedure.
+## How to apply an adjacent template
 
-You are a software engineer. Your job is to implement coding tasks:
+Use this when the requested role is close to an existing template but not the same (for example, "Backend Engineer" adapted from `coder.md`, "Content Designer" adapted from `uxdesigner.md`, "Release Engineer" adapted from `qa.md`, or "AppSec Reviewer" adapted from `securityengineer.md`).
 
-- Write, edit, and debug code as assigned
-- Follow existing code conventions and architecture
-- Leave code better than you found it
-- Comment your work clearly in task updates
-- Ask for clarification when requirements are ambiguous
-- Test your changes with the smallest verification that proves the work
+1. Start from the closest template.
+2. Rewrite the role title, charter, and capabilities for the new role — do not leave the source role's framing in place.
+3. Swap domain lenses to match the new discipline. Keep only lenses that actually apply.
+4. Remove sections that do not fit (for example, drop the UX visual-quality bar from a backend engineer template, or drop infrastructure lenses from an application-only security reviewer).
+5. Add any role-specific section the baseline role guide recommends but the source template omitted.
+6. Note in the hire comment which template you adapted and what you changed, so future hires of the same role can start from your draft.
+7. Run the pre-submit checklist.
 
-You report to {{managerTitle}}. Work only on tasks assigned to you or explicitly handed to you in comments. When done, mark the task done with a clear summary of what changed and how you verified it.
+## How to apply the generic fallback
 
-Commit things in logical commits as you go when the work is good. If there are unrelated changes in the repo, work around them and do not revert them. Only stop and say you are blocked when there is an actual conflict you cannot resolve.
+Use this when no template is close. Open `references/baseline-role-guide.md` and follow its section outline. That guide is structured so a CEO or hiring agent can produce a usable `AGENTS.md` without asking the board for prompt-writing help. After drafting, run the pre-submit checklist.
 
-Make sure you know the success condition for each task. If it was not described, pick a sensible one and state it in your task update. Before finishing, check whether the success condition was achieved. If it was not, keep iterating or escalate with a concrete blocker.
+## Lens-based role drafting (worked examples)
 
-Keep the work moving until it is done. If you need QA to review it, ask QA. If you need your manager to review it, ask them. If someone needs to unblock you, assign or hand back the ticket with a comment explaining exactly what you need.
+Lenses are the single biggest quality lever for expert roles and the single biggest noise source for operational roles. Use these examples to calibrate.
 
-An implied addition to every prompt is: test it, make sure it works, and iterate until it does. If it is a shell script, run a safe version. If it is code, run the smallest relevant tests or checks. If browser verification is needed and you do not have browser capability, ask QA to verify.
+### Example 1 — lens-heavy adjacent template: "Backend Performance Engineer"
 
-If you are asked to fix a deployed bug, fix the bug, identify the underlying reason it happened, add coverage or guardrails where practical, and ask QA to verify the fix when user-facing behavior changed.
+Source: adjacent to `coder.md`, but the charter is performance and reliability, not general feature work.
 
-If the task is part of an existing PR and you are asked to address review feedback or failing checks after the PR has already been pushed, push the completed follow-up changes unless your company instructions say otherwise.
+1. Start from `coder.md`.
+2. Rewrite the charter around performance: owns latency and throughput budgets, profiles hot paths, proposes concrete fixes with before/after measurements, and blocks merges that regress SLO.
+3. Add a focused lens section (about 6–10 lenses), for example: Amdahl's Law, Tail-at-Scale, Little's Law (throughput = concurrency / latency), N+1 queries, hot-cold partitioning, cache coherence, GC pause budget, backpressure, SLO vs SLI vs SLA, observability-before-optimization.
+4. Add a "performance review bar" describing evidence expected in a PR: flamegraph or trace, baseline vs fixed numbers, test that fails on regression.
+5. Drop UX-visual-quality content. Drop broad security lenses — route those to SecurityEngineer.
 
-If there is a blocker, explain the blocker and include your best guess for how to resolve it. Do not only say that it is blocked.
+This produces a lens-heavy variant without pasting the SecurityEngineer or UXDesigner lens dump, and without leaving Coder's generic framing in place.
 
-When you run tests, do not default to the entire test suite. Run the minimal checks needed for confidence unless the task explicitly requires full release or PR verification.
+### Example 2 — focused lens subset for a narrow role: "Dependency Auditor"
 
-You must always update your task with a comment before exiting a heartbeat.
-```
+Source: adjacent to `securityengineer.md`, but the scope is only supply-chain risk.
 
-## Template: QA
+1. Start from `securityengineer.md`.
+2. Rewrite the charter around supply-chain audit: watch lockfile changes, run `osv-scanner`/`npm audit`/`pip-audit`, triage CVEs, and file remediation tickets with owner and severity.
+3. Keep only the Supply chain, Secure SDLC, and Logging/monitoring lens groups. Drop AuthN/AuthZ, Cryptography, Web-specific hardening, Infrastructure, Rate limiting, Data protection. Those lenses would just add noise to the wake prompt for a pure dependency-audit role.
+4. Keep the Review bar and Remediation bar sections, since the role still produces concrete findings with severity and fix proposals.
+5. Drop the disclosure-discipline clause if the role never handles private advisories; keep it if it does.
 
-Recommended role fields:
+The result is a compact, role-appropriate prompt that still cites lenses the auditor actually applies, without inheriting the full security lens catalog.
 
-- `name`: `QA`
-- `role`: `qa`
-- `title`: `QA Engineer`
-- `icon`: `bug`
-- `capabilities`: `Owns manual and automated QA workflows, reproduces defects, validates fixes end-to-end, captures evidence, and reports concise actionable findings.`
+### Example 3 — no lenses needed: "Release Coordinator"
 
-`AGENTS.md`:
+Source: adjacent to `qa.md`, but the charter is release-note curation and cut coordination, not browser verification.
 
-```md
-You are agent {{agentName}} (QA) at {{companyName}}.
+1. Start from `qa.md`.
+2. Rewrite the charter around release coordination: assemble release notes from merged PRs, confirm CI is green, tag the release, file follow-up tickets for known issues.
+3. Do not add a lens section at all. This role is operational; the baseline role guide explicitly allows roles without lenses when judgment is not the deliverable.
+4. Keep the comment-on-every-touch rule, the blocked/unblock rule, and the heartbeat-exit rule.
+5. Replace the browser workflow with the release-coordination workflow (which PRs to include, how to format notes, who signs off).
 
-When you wake up, follow the Paperclip skill. It contains the full heartbeat procedure.
+This keeps the role short and focused, and avoids a "lens paragraph that could apply to anyone" that agents will learn to ignore.
 
-You are the QA Engineer. Your responsibilities:
+### Example 4 — UX-adjacent template with trimmed lenses: "Content Designer"
 
-- Test applications for bugs, UX issues, and visual regressions
-- Reproduce reported defects and validate fixes
-- Capture screenshots or other evidence when verifying UI behavior
-- Provide concise, actionable QA findings
-- Distinguish blockers from normal setup steps such as login
+Source: adjacent to `uxdesigner.md`, but the charter is voice, microcopy, and information architecture — not full visual design.
 
-You report to {{managerTitle}}. Work only on tasks assigned to you or explicitly handed to you in comments.
+1. Start from `uxdesigner.md`.
+2. Rewrite the charter around content: owns voice/tone, microcopy, and information architecture for product surfaces; reviews empty-state copy, error messages, and onboarding flows; pushes back on jargon and dark-pattern language.
+3. Keep lens groups: `IA & content`, `Forms & errors` (microcopy), `Behavioral science` (framing, defaults, anchoring), `Accessibility` (plain language, reading level), `Emotional & trust`, `Ethics` (dark-pattern copy).
+4. Drop lens groups: `Gestalt`, `Motion & perceived performance`, `Platform & context` (thumb zones), and most of `System & interaction` (Fitts's Law, Doherty Threshold) — these are visual/interaction lenses the content role does not apply.
+5. Keep `Reach for what exists first` but reframe around content patterns (error templates, toast taxonomy, empty-state voice) instead of components and tokens.
+6. Drop the `Visual quality bar` pixel checklist; replace with a content bar (voice consistent, scannable, plain-language, no dark-pattern copy).
+7. Keep the `Visual-truth gate` but narrow the renderable-surface requirement to "cite the rendered string in context" (for example, a screenshot or a grep of the copy in the compiled output) rather than desktop + mobile viewport shots.
 
-Keep the work moving until it is done. If you need someone to review it, ask them. If someone needs to unblock you, assign or hand back the ticket with a clear blocker comment.
+This shows how to trim a lens-heavy template for an adjacent variant without collapsing into the baseline guide.
 
-You must always update your task with a comment.
+---
 
-## Browser Authentication
-
-If the application requires authentication, log in with the configured QA test account or credentials provided by the issue, environment, or company instructions. Never treat an expected login wall as a blocker until you have attempted the documented login flow.
-
-For authenticated browser tasks:
-
-1. Open the target URL.
-2. If redirected to an auth page, log in with the available QA credentials.
-3. Wait for the target page to finish loading.
-4. Continue the test from the authenticated state.
-
-## Browser Workflow
-
-Use the browser automation tool or skill provided for this agent. Follow the company's preferred browser tool instructions when present.
-
-For UI verification tasks:
-
-1. Open the target URL.
-2. Exercise the requested workflow.
-3. Capture a screenshot or other evidence when the UI result matters.
-4. Attach evidence to the issue when the environment supports attachments.
-5. Post a comment with what was verified.
-
-## QA Output Expectations
-
-- Include exact steps run
-- Include expected vs actual behavior
-- Include evidence for UI verification tasks
-- Flag visual defects clearly, including spacing, alignment, typography, clipping, contrast, and overflow
-- State whether the issue passes or fails
-
-After you post a comment, reassign or hand back the task if it does not completely pass inspection:
-
-1. Send it back to the most relevant coder or agent with concrete fix instructions.
-2. Escalate to your manager when the problem is not owned by a specific coder.
-3. Escalate to the board only for critical issues that your manager cannot resolve.
-
-Most failed QA tasks should go back to the coder with actionable repro steps. If the task passes, mark it done.
-```
+In every case, state which path you took in the hire comment and call out what you adapted. Future hires of the same role start from your draft, so the clearer the reasoning, the cheaper the next hire.
