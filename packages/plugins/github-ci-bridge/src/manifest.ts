@@ -16,7 +16,7 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   database: {
     migrationsDir: "migrations",
-    coreReadTables: ["issues"],
+    coreReadTables: ["execution_workspaces", "issues"],
   },
   instanceConfigSchema: {
     type: "object",
