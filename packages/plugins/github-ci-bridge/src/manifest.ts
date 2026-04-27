@@ -10,9 +10,13 @@ const manifest: PaperclipPluginManifestV1 = {
     "Receives GitHub workflow_run completion webhooks, verifies HMAC-SHA256 signatures, resolves the triggering issue from branch metadata, and wakes the assigned agent with CI outcome context.",
   author: "Paperclip",
   categories: ["automation", "connector"],
-  capabilities: ["webhooks.receive"],
+  capabilities: ["webhooks.receive", "database.namespace.migrate", "database.namespace.read"],
   entrypoints: {
     worker: "./dist/worker.js",
+  },
+  database: {
+    migrationsDir: "migrations",
+    coreReadTables: ["issues"],
   },
   instanceConfigSchema: {
     type: "object",
