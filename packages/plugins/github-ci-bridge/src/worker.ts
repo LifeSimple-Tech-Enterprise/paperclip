@@ -162,8 +162,8 @@ function parseWorkflowRunPayload(body: unknown): WorkflowRunPayload | null {
 // Issue resolver (payload-only, no outbound HTTP) — LIF-335 plan §4.2
 // ---------------------------------------------------------------------------
 
-/** Matches standard company issue identifiers like LIF-344, PAP-12 (2–5 caps, dash, digits). */
-const ISSUE_IDENTIFIER_RE = /\b([A-Z]{2,5}-\d+)\b/;
+/** Matches standard company issue identifiers like LIF-344, PAP-12 (known prefixes first, then 2–5 caps, dash, digits). */
+const ISSUE_IDENTIFIER_RE = /((?:LIF|PAP|[A-Z]{2,5})-\d+)/;
 
 interface ResolveResult {
   issueId: string;
