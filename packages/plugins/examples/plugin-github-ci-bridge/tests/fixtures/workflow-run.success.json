@@ -1,0 +1,31 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 100001,
+    "name": "CI",
+    "run_attempt": 1,
+    "run_number": 42,
+    "conclusion": "success",
+    "status": "completed",
+    "head_branch": "lif-200-feat",
+    "html_url": "https://github.com/isaacyip007/calmnotify/actions/runs/100001",
+    "pull_requests": [
+      {
+        "number": 42,
+        "head": {
+          "ref": "lif-200-feat",
+          "sha": "abc123"
+        },
+        "base": {
+          "ref": "master"
+        }
+      }
+    ],
+    "repository": {
+      "full_name": "isaacyip007/calmnotify"
+    }
+  },
+  "repository": {
+    "full_name": "isaacyip007/calmnotify"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@paperclipai/plugin-github-ci-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Bridge plugin that reacts to GitHub CI workflow_run events and wakes Paperclip agents",
+  "scripts": {
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

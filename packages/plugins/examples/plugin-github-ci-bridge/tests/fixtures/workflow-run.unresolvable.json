@@ -1,0 +1,20 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 100003,
+    "name": "CI",
+    "run_attempt": 1,
+    "run_number": 44,
+    "conclusion": "success",
+    "status": "completed",
+    "head_branch": "main",
+    "html_url": "https://github.com/isaacyip007/calmnotify/actions/runs/100003",
+    "pull_requests": [],
+    "repository": {
+      "full_name": "isaacyip007/calmnotify"
+    }
+  },
+  "repository": {
+    "full_name": "isaacyip007/calmnotify"
+  }
+}
