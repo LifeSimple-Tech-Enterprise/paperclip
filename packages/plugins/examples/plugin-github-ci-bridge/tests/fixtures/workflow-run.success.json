@@ -1,0 +1,38 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 100001,
+    "name": "ci",
+    "head_branch": "lif-200-feat",
+    "head_sha": "deadbeefcafe1234567890abcdef1234567890ab",
+    "run_number": 42,
+    "run_attempt": 1,
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/isaacyip007/calmnotify/actions/runs/100001",
+    "pull_requests": [
+      {
+        "id": 99001,
+        "number": 42,
+        "head": {
+          "ref": "lif-200-feat",
+          "sha": "deadbeefcafe1234567890abcdef1234567890ab"
+        },
+        "base": {
+          "ref": "main"
+        }
+      }
+    ],
+    "repository": {
+      "full_name": "isaacyip007/calmnotify",
+      "name": "calmnotify",
+      "owner": { "login": "isaacyip007" }
+    }
+  },
+  "repository": {
+    "full_name": "isaacyip007/calmnotify",
+    "name": "calmnotify",
+    "owner": { "login": "isaacyip007" }
+  }
+}

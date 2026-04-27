@@ -1,0 +1,29 @@
+{
+  "name": "@paperclipai/plugin-github-ci-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "GitHub CI ↔ Paperclip agent reaction bridge plugin (LIF-335). Receives workflow_run completions, resolves the linked issue, and reacts (comment + state-aware wake).",
+  "scripts": {
+    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": ["paperclip", "plugin", "github", "ci"],
+  "author": "QA_Unit (LIF-343 scaffold)",
+  "license": "MIT",
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 100002,
+    "name": "ci",
+    "head_branch": "fix/auth",
+    "head_sha": "feedf00d1234567890abcdef1234567890abcdef",
+    "run_number": 7,
+    "run_attempt": 2,
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "failure",
+    "html_url": "https://github.com/isaacyip007/paperclip-mod/actions/runs/100002",
+    "pull_requests": [
+      {
+        "id": 99002,
+        "number": 18,
+        "head": { "ref": "fix/auth", "sha": "feedf00d1234567890abcdef1234567890abcdef" },
+        "base": { "ref": "main" }
+      }
+    ],
+    "repository": {
+      "full_name": "isaacyip007/paperclip-mod",
+      "name": "paperclip-mod",
+      "owner": { "login": "isaacyip007" }
+    },
+    "failed_jobs": [
+      {
+        "name": "unit-tests",
+        "html_url": "https://github.com/isaacyip007/paperclip-mod/actions/runs/100002/jobs/200001",
+        "conclusion": "failure"
+      }
+    ]
+  },
+  "repository": {
+    "full_name": "isaacyip007/paperclip-mod",
+    "name": "paperclip-mod",
+    "owner": { "login": "isaacyip007" }
+  }
+}
