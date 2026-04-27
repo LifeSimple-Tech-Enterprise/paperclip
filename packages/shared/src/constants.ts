@@ -842,6 +842,10 @@ export const PLUGIN_WEBHOOK_DELIVERY_STATUSES = [
   "pending",
   "success",
   "failed",
+  // dispatch-before-persist statuses (LIF-336)
+  "accepted",
+  "unresolved",
+  "dispatch_failed",
 ] as const;
 export type PluginWebhookDeliveryStatus = (typeof PLUGIN_WEBHOOK_DELIVERY_STATUSES)[number];
 

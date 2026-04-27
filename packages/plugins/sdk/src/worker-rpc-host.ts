@@ -51,6 +51,7 @@ import type {
   PluginHealthDiagnostics,
   PluginConfigValidationResult,
   PluginWebhookInput,
+  PluginWebhookResponse,
 } from "./define-plugin.js";
 import type {
   PluginContext,
@@ -1243,14 +1244,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     await handler(params.job);
   }
 
-  async function handleWebhook(params: PluginWebhookInput): Promise<void> {
+  async function handleWebhook(params: PluginWebhookInput): Promise<PluginWebhookResponse> {
     if (!plugin.definition.onWebhook) {
       throw Object.assign(
         new Error("handleWebhook is not implemented by this plugin"),
         { code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED },
       );
     }
-    await plugin.definition.onWebhook(params);
+    const result = await plugin.definition.onWebhook(params);
+    // Legacy plugins return void; default to ok=true, status=202.
+    if (result == null) {
+      return { ok: true, status: 202 };
+    }
+    return result;
   }
 
   async function handleApiRequest(params: PluginApiRequestInput): Promise<unknown> {

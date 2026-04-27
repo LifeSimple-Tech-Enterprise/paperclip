@@ -122,6 +122,39 @@ export interface PluginWebhookInput {
   requestId: string;
 }
 
+/**
+ * Response returned by a plugin's `onWebhook` handler.
+ *
+ * The host uses this to decide whether to persist the delivery and which HTTP
+ * status code to return to the caller.
+ *
+ * - `ok: true`  — signature/replay validation passed; host persists the delivery
+ *   with status derived from `deliveryStatus` (defaults to `"accepted"`).
+ * - `ok: false` — validation failed (e.g. bad HMAC); host returns `status` to
+ *   the caller and writes **no** `plugin_webhook_deliveries` row.
+ *
+ * Plugins that return `void` / `undefined` are treated as legacy and default to
+ * `{ ok: true, status: 202 }`.
+ *
+ * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
+ */
+export interface PluginWebhookResponse {
+  /** Whether the delivery was accepted by the plugin. */
+  ok: boolean;
+  /** HTTP status code to return to the caller. */
+  status: number;
+  /** Optional human-readable reason (surfaced in error responses when ok=false). */
+  reason?: string;
+  /**
+   * Delivery row metadata written when `ok === true`.
+   * `deliveryStatus` defaults to `"accepted"` when omitted.
+   */
+  deliveryMetadata?: {
+    deliveryStatus?: "accepted" | "unresolved";
+    [key: string]: unknown;
+  };
+}
+
 export interface PluginApiRequestInput {
   routeKey: string;
   method: string;
@@ -235,7 +268,7 @@ export interface PluginDefinition {
    * @param input - Webhook delivery metadata and payload
    * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
    */
-  onWebhook?(input: PluginWebhookInput): Promise<void>;
+  onWebhook?(input: PluginWebhookInput): Promise<PluginWebhookResponse | void>;
 
   /**
    * Called for manifest-declared scoped JSON API routes under

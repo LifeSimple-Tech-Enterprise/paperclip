@@ -55,7 +55,7 @@ import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
-import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { ToolRunContext, PluginWebhookResponse } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import {
   assertAuthenticated,
@@ -2233,14 +2233,23 @@ export function pluginRoutes(
    * 2. The plugin declares the `webhooks.receive` capability
    * 3. The `endpointKey` matches a declared webhook in the manifest
    *
-   * The delivery is recorded in the `plugin_webhook_deliveries` table and
-   * dispatched to the worker via the `handleWebhook` RPC method.
+   * **Dispatch-before-persist** (LIF-336): The payload is forwarded to the
+   * plugin worker BEFORE any database write. The plugin is responsible for
+   * HMAC signature verification. Only after the worker responds with `ok: true`
+   * does the host insert a `plugin_webhook_deliveries` row — preventing
+   * unauthenticated callers from filling the database with junk rows.
+   *
+   * - `ok: true`  → INSERT delivery (status `accepted` or `unresolved` from
+   *                  `deliveryMetadata`), return plugin's HTTP status to caller.
+   * - `ok: false` → NO INSERT, return plugin's HTTP status (typically 401).
+   * - Worker crash → INSERT delivery with `status = 'dispatch_failed'` for
+   *                  SRE alerting, return 502.
    *
    * **Note:** This route does NOT require board authentication — webhook
    * endpoints must be publicly accessible for external callers. Signature
    * verification is the plugin's responsibility.
    *
-   * Response: `{ deliveryId: string, status: string }`
+   * Response: `{ deliveryId?: string, status: string }`
    * Errors:
    * - 404 if plugin not found or endpointKey not declared
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
@@ -2315,68 +2324,84 @@ export function pluginRoutes(
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
 
-    // Step 6: Record the delivery in the database
+    // Step 6: Dispatch to the plugin worker BEFORE any DB write.
+    // The plugin validates the HMAC signature and returns { ok, status, ... }.
     const startedAt = new Date();
+    let workerResponse: PluginWebhookResponse;
+    try {
+      workerResponse = await webhookDeps.workerManager.call(
+        plugin.id,
+        "handleWebhook",
+        {
+          endpointKey,
+          headers: req.headers as Record<string, string | string[]>,
+          rawBody,
+          parsedBody,
+          requestId,
+        },
+      );
+    } catch (err) {
+      // Worker crashed or timed out — insert a dispatch_failed row for SRE alerting.
+      const finishedAt = new Date();
+      const durationMs = finishedAt.getTime() - startedAt.getTime();
+      const errorMessage = err instanceof Error ? err.message : String(err);
+
+      const [delivery] = await db
+        .insert(pluginWebhookDeliveries)
+        .values({
+          pluginId: plugin.id,
+          webhookKey: endpointKey,
+          status: "dispatch_failed",
+          payload,
+          headers: rawHeaders,
+          startedAt,
+          finishedAt,
+          durationMs,
+          error: errorMessage,
+        })
+        .returning({ id: pluginWebhookDeliveries.id });
+
+      res.status(502).json({
+        deliveryId: delivery?.id,
+        status: "dispatch_failed",
+        error: errorMessage,
+      });
+      return;
+    }
+
+    // Step 7: Act on the plugin's response.
+    if (!workerResponse.ok) {
+      // Plugin rejected the delivery (e.g. bad HMAC) — write nothing.
+      res.status(workerResponse.status).json({
+        status: "rejected",
+        reason: workerResponse.reason,
+      });
+      return;
+    }
+
+    // ok === true: persist the delivery record.
+    const finishedAt = new Date();
+    const durationMs = finishedAt.getTime() - startedAt.getTime();
+    const deliveryStatus = workerResponse.deliveryMetadata?.deliveryStatus ?? "accepted";
+
     const [delivery] = await db
       .insert(pluginWebhookDeliveries)
       .values({
         pluginId: plugin.id,
         webhookKey: endpointKey,
-        status: "pending",
+        status: deliveryStatus,
         payload,
         headers: rawHeaders,
         startedAt,
+        finishedAt,
+        durationMs,
       })
       .returning({ id: pluginWebhookDeliveries.id });
 
-    // Step 7: Dispatch to the worker via handleWebhook RPC
-    try {
-      await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
-        endpointKey,
-        headers: req.headers as Record<string, string | string[]>,
-        rawBody,
-        parsedBody,
-        requestId,
-      });
-
-      // Step 8: Update delivery record to success
-      const finishedAt = new Date();
-      const durationMs = finishedAt.getTime() - startedAt.getTime();
-      await db
-        .update(pluginWebhookDeliveries)
-        .set({
-          status: "success",
-          durationMs,
-          finishedAt,
-        })
-        .where(eq(pluginWebhookDeliveries.id, delivery.id));
-
-      res.status(200).json({
-        deliveryId: delivery.id,
-        status: "success",
-      });
-    } catch (err) {
-      // Step 8 (error): Update delivery record to failed
-      const finishedAt = new Date();
-      const durationMs = finishedAt.getTime() - startedAt.getTime();
-      const errorMessage = err instanceof Error ? err.message : String(err);
-
-      await db
-        .update(pluginWebhookDeliveries)
-        .set({
-          status: "failed",
-          durationMs,
-          error: errorMessage,
-          finishedAt,
-        })
-        .where(eq(pluginWebhookDeliveries.id, delivery.id));
-
-      res.status(502).json({
-        deliveryId: delivery.id,
-        status: "failed",
-        error: errorMessage,
-      });
-    }
+    res.status(workerResponse.status).json({
+      deliveryId: delivery?.id,
+      status: deliveryStatus,
+    });
   });
 
   // ===========================================================================
