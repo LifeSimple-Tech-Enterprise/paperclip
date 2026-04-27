@@ -16,6 +16,8 @@ import {
   WEBHOOK_KEYS,
 } from "./constants.js";
 
+void PLUGIN_ID; // silence unused-import lint — used in manifest, kept here for co-location
+
 // ---------------------------------------------------------------------------
 // PluginWebhookResponse
 //
@@ -92,8 +94,137 @@ function accept(meta?: PluginWebhookResponse["deliveryMetadata"]): PluginWebhook
   };
 }
 
+function unresolved(meta: Record<string, unknown>): PluginWebhookResponse {
+  return {
+    ok: true,
+    status: 202,
+    deliveryMetadata: { deliveryStatus: "unresolved", ...meta },
+  };
+}
+
 function reject401(reason: "invalid_signature" | "replay" | "malformed"): PluginWebhookResponse {
   return { ok: false, status: 401, reason };
+}
+
+// ---------------------------------------------------------------------------
+// Payload shape helpers
+// ---------------------------------------------------------------------------
+
+interface WorkflowRunPr {
+  number: number;
+  head: { ref: string; sha?: string };
+}
+
+interface WorkflowRunPayload {
+  workflow_run: {
+    id: number;
+    run_attempt: number;
+    head_branch: string | null;
+    conclusion: string | null;
+    html_url?: string;
+    pull_requests: WorkflowRunPr[];
+  };
+  repository: {
+    full_name: string;
+  };
+}
+
+function parseWorkflowRunPayload(body: unknown): WorkflowRunPayload | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as Record<string, unknown>;
+  if (!b.workflow_run || typeof b.workflow_run !== "object") return null;
+  if (!b.repository || typeof b.repository !== "object") return null;
+  const wf = b.workflow_run as Record<string, unknown>;
+  const repo = b.repository as Record<string, unknown>;
+  if (typeof repo.full_name !== "string") return null;
+  return {
+    workflow_run: {
+      id: typeof wf.id === "number" ? wf.id : 0,
+      run_attempt: typeof wf.run_attempt === "number" ? wf.run_attempt : 1,
+      head_branch: typeof wf.head_branch === "string" ? wf.head_branch : null,
+      conclusion: typeof wf.conclusion === "string" ? wf.conclusion : null,
+      html_url: typeof wf.html_url === "string" ? wf.html_url : undefined,
+      pull_requests: Array.isArray(wf.pull_requests)
+        ? (wf.pull_requests as unknown[]).filter(
+            (pr): pr is WorkflowRunPr =>
+              typeof pr === "object" &&
+              pr !== null &&
+              typeof (pr as Record<string, unknown>).number === "number" &&
+              typeof ((pr as Record<string, unknown>).head as Record<string, unknown> | undefined)?.ref === "string",
+          )
+        : [],
+    },
+    repository: { full_name: repo.full_name as string },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Issue resolver (payload-only, no outbound HTTP) — LIF-335 plan §4.2
+// ---------------------------------------------------------------------------
+
+/** Matches standard company issue identifiers like LIF-344, PAP-12 (2–5 caps, dash, digits). */
+const ISSUE_IDENTIFIER_RE = /\b([A-Z]{2,5}-\d+)\b/;
+
+interface ResolveResult {
+  issueId: string;
+  prNumber?: number;
+}
+
+/**
+ * Attempt to resolve a workflow_run event to a Paperclip issue using only
+ * local DB state — no outbound HTTP calls.
+ *
+ * Resolution order (per §4.2):
+ * 1. execution_workspaces lookup: branch_name exact match + repo_url LIKE %repoFullName%
+ * 2. Regex on branch for a known issue identifier prefix, then issues lookup.
+ *
+ * Returns null when neither approach resolves.
+ */
+async function resolveIssue(
+  ctx: PluginContext,
+  branch: string,
+  repoFullName: string,
+  prNumber?: number,
+): Promise<ResolveResult | null> {
+  // Step 1 (plan §4.2 step 3): execution_workspaces lookup
+  try {
+    const rows = await ctx.db.query<{ source_issue_id: string | null }>(
+      `SELECT source_issue_id
+       FROM public.execution_workspaces
+       WHERE branch_name = $1
+         AND repo_url LIKE $2
+         AND source_issue_id IS NOT NULL
+       LIMIT 1`,
+      [branch, `%${repoFullName}%`],
+    );
+    if (rows.length > 0 && rows[0]!.source_issue_id) {
+      return { issueId: rows[0]!.source_issue_id, prNumber };
+    }
+  } catch {
+    // DB namespace may not be active yet or query failed — fall through to regex
+  }
+
+  // Step 2 (plan §4.2 step 4): Regex fallback — extract identifier from branch name
+  const match = ISSUE_IDENTIFIER_RE.exec(branch);
+  if (match) {
+    const identifier = match[1]!.toUpperCase();
+    try {
+      const rows = await ctx.db.query<{ id: string }>(
+        `SELECT id
+         FROM public.issues
+         WHERE UPPER(identifier) = $1
+         LIMIT 1`,
+        [identifier],
+      );
+      if (rows.length > 0 && rows[0]!.id) {
+        return { issueId: rows[0]!.id, prNumber };
+      }
+    } catch {
+      // fall through to unresolved
+    }
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +234,7 @@ function reject401(reason: "invalid_signature" | "replay" | "malformed"): Plugin
 async function handleCiEvent(
   input: PluginWebhookInput,
   config: GithubCiBridgeConfig,
+  ctx: PluginContext,
 ): Promise<PluginWebhookResponse> {
   // 1. Require signature + timestamp headers
   const sigHeader = firstHeader(input.headers[SIGNATURE_HEADER]);
@@ -132,18 +264,54 @@ async function handleCiEvent(
     return reject401("invalid_signature");
   }
 
-  // 5. Optional repo allowlist
+  // 5. Parse workflow_run payload
+  const payload = parseWorkflowRunPayload(input.parsedBody);
+  if (!payload) {
+    // Signature valid but body is not a workflow_run event — treat as unresolved audit row
+    return unresolved({ reason: "malformed_payload" });
+  }
+
+  const repoFullName = payload.repository.full_name;
+
+  // 6. Optional repo allowlist check (post-HMAC so we don't leak repo membership to unsigned callers)
   if (repoAllowlist && repoAllowlist.length > 0) {
-    const parsed = input.parsedBody as Record<string, unknown> | undefined;
-    const repoFullName = (parsed?.repository as Record<string, unknown> | undefined)?.full_name;
-    if (typeof repoFullName !== "string" || !repoAllowlist.includes(repoFullName)) {
+    if (!repoAllowlist.includes(repoFullName)) {
       return reject401("invalid_signature");
     }
   }
 
-  // 6. Valid — placeholder acceptance (issue resolution in T4, reactions in T5)
+  // 7. Extract branch (plan §4.2 steps 1–2)
+  const firstPr = payload.workflow_run.pull_requests[0];
+  const branch = firstPr?.head.ref ?? payload.workflow_run.head_branch;
+  const prNumber = firstPr?.number;
+  const conclusion = payload.workflow_run.conclusion;
+  const runId = payload.workflow_run.id;
+  const runAttempt = payload.workflow_run.run_attempt;
+
+  if (!branch) {
+    return unresolved({ reason: "no_branch", conclusion, runId, runAttempt });
+  }
+
+  // 8. Resolve branch → issue (plan §4.2 steps 3–5)
+  const resolved = await resolveIssue(ctx, branch, repoFullName, prNumber ?? undefined);
+
+  if (!resolved) {
+    // Plan §4.2 step 5 + §5: return ok:true so core writes an unresolved audit row
+    return unresolved({ branch, conclusion, runId, runAttempt, prNumber: prNumber ?? null });
+  }
+
+  // 9. Accepted — issue resolved; reactions handled in T5 (LIF-345)
   const idempotencyKey = firstHeader(input.headers[IDEMPOTENCY_HEADER]);
-  return accept(idempotencyKey ? { idempotencyKey } : undefined);
+  return accept({
+    issueId: resolved.issueId,
+    prNumber: resolved.prNumber ?? null,
+    branch,
+    conclusion,
+    runId,
+    runAttempt,
+    runUrl: payload.workflow_run.html_url ?? null,
+    idempotencyKey: idempotencyKey ?? null,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -214,11 +382,14 @@ const plugin = definePlugin({
   // Cast: remove once LIF-336 merges and SDK changes onWebhook return type
   // to Promise<PluginWebhookResponse | void>.
   async onWebhook(input: PluginWebhookInput): Promise<void> {
-    if (input.endpointKey !== WEBHOOK_KEYS.ciEvent) {
-      // Unexpected endpoint — return 401 so core writes nothing.
+    const ctx = currentCtx;
+    if (!ctx) {
       return reject401("invalid_signature") as unknown as void;
     }
-    return handleCiEvent(input, currentConfig) as unknown as void;
+    if (input.endpointKey !== WEBHOOK_KEYS.ciEvent) {
+      return reject401("invalid_signature") as unknown as void;
+    }
+    return handleCiEvent(input, currentConfig, ctx) as unknown as void;
   },
 
   async onShutdown(): Promise<void> {
