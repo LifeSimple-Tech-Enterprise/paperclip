@@ -2329,7 +2329,7 @@ export function pluginRoutes(
     const startedAt = new Date();
     let workerResponse: PluginWebhookResponse;
     try {
-      workerResponse = await webhookDeps.workerManager.call(
+      const rawResponse = (await webhookDeps.workerManager.call(
         plugin.id,
         "handleWebhook",
         {
@@ -2339,7 +2339,16 @@ export function pluginRoutes(
           parsedBody,
           requestId,
         },
-      );
+      )) as PluginWebhookResponse | null | undefined;
+
+      // Workers may return null/undefined when no config/secret is configured
+      // yet (LIF-361 not yet landed). Treat as a rejection rather than
+      // dereferencing null at the `workerResponse.ok` check below (LIF-364).
+      workerResponse = rawResponse ?? {
+        ok: false,
+        status: 401,
+        reason: "invalid_signature",
+      };
     } catch (err) {
       // Worker crashed or timed out — insert a dispatch_failed row for SRE alerting.
       const finishedAt = new Date();
