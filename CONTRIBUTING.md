@@ -107,3 +107,23 @@ Please include screenshots if possible if you have a visible change. (use someth
 Questions? Just ask in #dev — we're happy to help.
 
 Happy hacking!
+
+## Refactor freeze — LIF-371 Stages 0–2
+
+A multi-stage refactor of the wake/handoff seam is in progress (parent issue
+[LIF-371](/LIF/issues/LIF-371)). During Stages 0, 1, and 2 the following
+surfaces are FROZEN:
+
+- **No new wake reasons** may be added to the orchestrator
+  (`server/src/services/heartbeat.ts`, `services/run-continuations.ts`).
+- **No new instruction files** may be added to the per-wake load path
+  (`AGENTS.md`, `HEARTBEAT.md`, `SOUL.md`, `TOOLS.md`). Existing files may
+  be edited for bug fixes only.
+- **No new top-level config keys** may be added to `paperclip.config.json`
+  or the company runtime config.
+- **No new top-level entities** in `packages/db/src/schema/` until Stage 2's
+  `Handoff` lands. (Additive nullable columns on existing tables are OK.)
+
+Bug fixes on the existing surface are allowed during the freeze. Product
+feature work resumes at Stage 3. Code carrying a `// REFACTOR-LIF-371:`
+comment is part of the delete-list for the stage targeting that gotcha key.

@@ -21,6 +21,7 @@ export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
+  // REFACTOR-LIF-371: adapter_ctx_context_vs_config — ctx.config is the adapter config (command, cwd); ctx.context carries the wake snapshot; test path only reads ctx.config
   const config = parseObject(ctx.config);
   const command = asString(config.command, "");
   const cwd = asString(config.cwd, process.cwd());

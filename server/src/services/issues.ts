@@ -1714,6 +1714,7 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  // REFACTOR-LIF-371: paperclip_board_identity_fallback — adoptStaleCheckoutRun patches over stale checkout ownership without surfacing the identity conflict
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -1787,6 +1788,7 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  // REFACTOR-LIF-371: paperclip_board_identity_fallback — Fix C: staleness detection — if executionRunId references a run that is no longer queued or running, clear it
   async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
       await tx.execute(
@@ -2628,7 +2630,7 @@ export function issueService(db: Db) {
       }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
-        // Fix B: also clear the execution lock when leaving in_progress
+        // REFACTOR-LIF-371: done_status_flip — Fix B: also clear the execution lock when leaving in_progress
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
@@ -2638,7 +2640,7 @@ export function issueService(db: Db) {
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
         patch.checkoutRunId = null;
-        // Fix B: clear execution lock on reassignment, matching checkoutRunId clear
+        // REFACTOR-LIF-371: done_status_flip — Fix B: clear execution lock on reassignment, matching checkoutRunId clear
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
@@ -2797,6 +2799,7 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
+      // REFACTOR-LIF-371: done_status_flip — checkout unconditionally flips issue to in_progress; issues arriving from done/blocked get silently reflipped
       const updated = await db
         .update(issues)
         .set({
@@ -2986,6 +2989,7 @@ export function issueService(db: Db) {
       });
     },
 
+    // REFACTOR-LIF-371: release_wipes_state — release resets issue to todo + clears all assignee/checkout state; any mid-flight context is lost
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
       await clearExecutionRunIfTerminal(id);
       const existing = await db
@@ -3016,6 +3020,7 @@ export function issueService(db: Db) {
         }
       }
 
+      // REFACTOR-LIF-371: release_wipes_state — unconditionally resets to todo + null assignee; no handoff record created
       const updated = await db
         .update(issues)
         .set({

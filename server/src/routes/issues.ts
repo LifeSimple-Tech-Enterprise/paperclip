@@ -591,6 +591,7 @@ export function issueRoutes(
     return false;
   }
 
+  // REFACTOR-LIF-371: paperclip_board_identity_fallback — assertAgentIssueMutationAllowed (formerly assertAgentRunCheckoutOwnership) allows stale-run adoption; board identity not enforced
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -622,6 +623,7 @@ export function issueRoutes(
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
     const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
+    // REFACTOR-LIF-371: paperclip_board_identity_fallback — stale_checkout_run adoption logs the takeover but does not reject the request
     if (ownership.adoptedFromRunId) {
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -2687,6 +2689,7 @@ export function issueRoutes(
     res.json(issue);
   });
 
+  // REFACTOR-LIF-371: done_status_flip — checkout route flips issue to in_progress for any expectedStatus including done/blocked
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2761,6 +2764,7 @@ export function issueRoutes(
     res.json(updated);
   });
 
+  // REFACTOR-LIF-371: release_wipes_state — release route resets issue to todo; no handoff log created
   router.post("/issues/:id/release", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);

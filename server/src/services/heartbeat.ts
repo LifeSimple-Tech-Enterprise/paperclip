@@ -138,6 +138,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_released",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+// REFACTOR-LIF-371: review_gate_wake_loop — WAKE_COMMENT_IDS_KEY accumulates comment ids across coalesced wakes to prevent re-processing
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
@@ -235,6 +236,7 @@ function mergeAdapterRecoveryMetadata(input: {
       : {}),
   };
 }
+// REFACTOR-LIF-371: review_gate_wake_loop — small set of wake reasons that require a followup run while the issue is already running (approval gate)
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -1402,6 +1404,7 @@ function describeSessionResetReason(
   return null;
 }
 
+// REFACTOR-LIF-371: done_status_flip — decides whether the run-claim path should auto-checkout (flip) issue from todo/blocked to in_progress
 function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
@@ -1430,6 +1433,7 @@ function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
+// REFACTOR-LIF-371: review_gate_wake_loop — gates followup run queuing when the same issue is already running (prevents duplicate execution)
 function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
@@ -2020,6 +2024,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
     }
     return unsafeTextProjectionPromise;
+  }
+
+  // LIF-377: first-write-wins helper — records which ctx envelope produced the wake-task fields for a given run
+  async function recordCtxFieldUsed(wakeupRequestId: string | null | undefined, field: "context" | "config") {
+    if (!wakeupRequestId) return;
+    await db
+      .update(agentWakeupRequests)
+      .set({ ctxFieldUsed: field, updatedAt: new Date() })
+      .where(and(eq(agentWakeupRequests.id, wakeupRequestId), isNull(agentWakeupRequests.ctxFieldUsed)));
   }
 
   async function getAgent(agentId: string) {
@@ -3826,7 +3839,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
+    // REFACTOR-LIF-371: concurrent_runs_duplicate_fanout — Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
     if (claimedIssueId) {
@@ -4603,7 +4616,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const runtime = await ensureRuntimeState(agent);
+    // REFACTOR-LIF-371: adapter_ctx_context_vs_config — contextSnapshot is the canonical wake-context; adapters receive this as ctx.context but also read ctx.config (adapter config) causing dual-source confusion
     const context = parseObject(run.contextSnapshot);
+    // LIF-377: observe which envelope produced the task fields (first-write-wins)
+    void recordCtxFieldUsed(run.wakeupRequestId, "context");
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
@@ -4611,6 +4627,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;
+    // LIF-377: capture priorStatus before any auto-checkout transition
+    const claimPriorStatus = issueContext?.status ?? null;
+    const claimFiredTransitions: string[] = [];
     if (
       issueId &&
       issueContext &&
@@ -4625,11 +4644,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       try {
         await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
+        claimFiredTransitions.push(`auto_checkout:${claimPriorStatus}->in_progress`);
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+    }
+    // LIF-377: phase claim log — emitted after auto-checkout decision; persists observation columns
+    {
+      const claimPostStatus = issueContext?.status ?? null;
+      logger.info({
+        evt: "wake.event",
+        phase: "claim",
+        runId: run.id,
+        agentId: agent.id,
+        issueId: issueId ?? null,
+        wakeReason: readNonEmptyString(context.wakeReason) ?? null,
+        priorStatus: claimPriorStatus,
+        postCheckoutStatus: claimPostStatus,
+        ctxFieldUsed: "context",
+        firedTransitions: claimFiredTransitions,
+        suppressed: null,
+        ts: new Date().toISOString(),
+      }, "wake.event");
+      if (run.wakeupRequestId) {
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            postCheckoutIssueStatus: claimPostStatus,
+            firedTransitions: claimFiredTransitions,
+            updatedAt: new Date(),
+          })
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+      }
     }
     const wakeCommentId = deriveCommentId(context, null);
     const wakeCommentContext =
@@ -5405,6 +5453,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // REFACTOR-LIF-371: adapter_ctx_context_vs_config — adapter receives both ctx.context (wake snapshot) and ctx.config (adapter config); adapters conflate the two sources
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -6119,6 +6168,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
+      // REFACTOR-LIF-371: continuation_hot_loop — didAutomaticRecoveryFail gates re-enqueue to prevent unbounded issue_continuation_needed loops
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
@@ -6136,6 +6186,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      // REFACTOR-LIF-371: continuation_hot_loop — issue_continuation_needed re-enqueue path; max-attempt guard in didAutomaticRecoveryFail limits retries
       const retryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
       const recoveryReason = issue.status === "todo" ? "issue_assignment_recovery" : "issue_continuation_needed";
       const recoverySource =
@@ -6241,6 +6292,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  // REFACTOR-LIF-371: concurrent_runs_duplicate_fanout — enqueueWakeup is the single entry point; coalesce/deferred logic below prevents duplicate queued runs
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -6668,6 +6720,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId,
               source,
               triggerDetail,
+              // REFACTOR-LIF-371: concurrent_runs_duplicate_fanout — coalesced into same-name execution run; fan-out suppressed here
               reason: "issue_execution_same_name",
               payload,
               status: "coalesced",
@@ -6703,6 +6756,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .limit(1)
             .then((rows) => rows[0] ?? null);
 
+          // REFACTOR-LIF-371: concurrent_runs_duplicate_fanout — merge into existing deferred row instead of creating a second queued run
           if (existingDeferred) {
             const existingDeferredPayload = parseObject(existingDeferred.payload);
             const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
@@ -6790,7 +6844,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // doesn't start it). It will be stamped in claimQueuedRun() once the run
         // transitions to "running" — Fix A (lazy locking).
 
-        return { kind: "queued" as const, run: newRun };
+        return { kind: "queued" as const, run: newRun, wakeupRequestId: wakeupRequest.id, priorIssueStatus: issue?.status ?? null };
       });
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
@@ -6800,6 +6854,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const newRun = outcome.run;
+      // LIF-377: phase enqueue log — emitted after wake-request row is inserted
+      logger.info({
+        evt: "wake.event",
+        phase: "enqueue",
+        runId: newRun.id,
+        agentId,
+        issueId,
+        wakeReason: reason,
+        priorStatus: outcome.priorIssueStatus ?? null,
+        postCheckoutStatus: null,
+        ctxFieldUsed: null,
+        firedTransitions: [],
+        suppressed: null,
+        ts: new Date().toISOString(),
+      }, "wake.event");
+      // Persist priorIssueStatus on the wake-request row for dashboard queries
+      if (outcome.wakeupRequestId && outcome.priorIssueStatus != null) {
+        await db
+          .update(agentWakeupRequests)
+          .set({ priorIssueStatus: outcome.priorIssueStatus, updatedAt: new Date() })
+          .where(eq(agentWakeupRequests.id, outcome.wakeupRequestId));
+      }
       publishLiveEvent({
         companyId: newRun.companyId,
         type: "heartbeat.run.queued",
@@ -6914,6 +6990,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         updatedAt: new Date(),
       })
       .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+    // LIF-377: phase enqueue log — non-issue path (no issueId in context)
+    logger.info({
+      evt: "wake.event",
+      phase: "enqueue",
+      runId: newRun.id,
+      agentId,
+      issueId: null,
+      wakeReason: reason,
+      priorStatus: null,
+      postCheckoutStatus: null,
+      ctxFieldUsed: null,
+      firedTransitions: [],
+      suppressed: null,
+      ts: new Date().toISOString(),
+    }, "wake.event");
 
     publishLiveEvent({
       companyId: newRun.companyId,

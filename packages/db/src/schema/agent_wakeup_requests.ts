@@ -22,6 +22,12 @@ export const agentWakeupRequests = pgTable(
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
+    // LIF-377: wake-event observation columns (additive nullable, Stage 0)
+    priorIssueStatus: text("prior_issue_status"),
+    postCheckoutIssueStatus: text("post_checkout_issue_status"),
+    ctxFieldUsed: text("ctx_field_used"),
+    firedTransitions: jsonb("fired_transitions").$type<string[]>(),
+    suppressedReason: text("suppressed_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -36,5 +42,9 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    reasonStatusIdx: index("agent_wakeup_requests_reason_status_idx").on(
+      table.reason,
+      table.postCheckoutIssueStatus,
+    ),
   }),
 );

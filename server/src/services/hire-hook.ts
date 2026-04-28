@@ -21,6 +21,7 @@ export interface NotifyHireApprovedInput {
  * Invokes the adapter's onHireApproved hook when an agent is approved (join-request or hire_agent approval).
  * Failures are non-fatal: we log and write to activity, never throw.
  */
+// REFACTOR-LIF-371: default_tasks_assign_grant — tasks:assign grant is not auto-applied at hire time; CEO must PATCH /agents/:id/permissions separately
 export async function notifyHireApproved(
   db: Db,
   input: NotifyHireApprovedInput,

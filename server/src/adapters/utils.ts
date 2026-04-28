@@ -28,6 +28,7 @@ export const appendWithByteCap = serverUtils.appendWithByteCap;
 export const resolvePathValue = serverUtils.resolvePathValue;
 export const renderTemplate = serverUtils.renderTemplate;
 export const redactEnvForLogs = serverUtils.redactEnvForLogs;
+// REFACTOR-LIF-371: process_adapter_no_wake_env — buildPaperclipEnv only injects agent identity vars; wake-payload env (PAPERCLIP_TASK_ID etc.) is not injected here
 export const buildPaperclipEnv = serverUtils.buildPaperclipEnv;
 export const defaultPathForPlatform = serverUtils.defaultPathForPlatform;
 export const ensurePathInEnv = serverUtils.ensurePathInEnv;
