@@ -6254,6 +6254,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(issues.id, issue.id));
 
+      // LIF-379: phase enqueue log — orphaned-run recovery path bypasses
+      // enqueueWakeup(), so emit the dashboard-shape wake.event here. Mirrors
+      // the field shape at heartbeat.ts:6857 for parity with the normal path.
+      logger.info({
+        evt: "wake.event",
+        phase: "enqueue",
+        runId: queuedRun.id,
+        agentId: recoveryAgent.id,
+        issueId: issue.id,
+        wakeReason: recoveryReason,
+        priorStatus: issue.status,
+        postCheckoutStatus: null,
+        ctxFieldUsed: null,
+        firedTransitions: [],
+        suppressed: null,
+        ts: now.toISOString(),
+      }, "wake.event");
+
       return {
         kind: "queued_recovery" as const,
         run: queuedRun,
