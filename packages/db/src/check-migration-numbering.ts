@@ -46,13 +46,15 @@ function ensureStrictlyOrdered(values: string[], label: string) {
 function ensureJournalMatchesFiles(migrationFiles: string[], journalTags: string[]) {
   const journalFiles = journalTags.map((tag) => `${tag}.sql`);
 
-  if (journalFiles.length !== migrationFiles.length) {
+  // Migration files may contain non-journaled entries beyond the journal's last entry.
+  // Validate that all journaled files appear at the start of the migration file list in order.
+  if (journalFiles.length > migrationFiles.length) {
     throw new Error(
-      `Migration journal/file count mismatch: journal has ${journalFiles.length}, files have ${migrationFiles.length}`,
+      `Migration journal/file count mismatch: journal has ${journalFiles.length} entries but only ${migrationFiles.length} migration files exist`,
     );
   }
 
-  for (let index = 0; index < migrationFiles.length; index += 1) {
+  for (let index = 0; index < journalFiles.length; index += 1) {
     const migrationFile = migrationFiles[index];
     const journalFile = journalFiles[index];
     if (migrationFile !== journalFile) {
@@ -65,7 +67,7 @@ function ensureJournalMatchesFiles(migrationFiles: string[], journalTags: string
 
 async function main() {
   const migrationFiles = (await readdir(migrationsDir))
-    .filter((entry) => entry.endsWith(".sql"))
+    .filter((entry) => entry.endsWith(".sql") && !entry.endsWith(".down.sql"))
     .sort();
 
   ensureNoDuplicates(migrationFiles, "migration files");

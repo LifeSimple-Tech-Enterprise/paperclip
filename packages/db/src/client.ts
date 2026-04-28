@@ -68,7 +68,7 @@ export async function getPostgresDataDirectory(url: string): Promise<string | nu
 async function listMigrationFiles(): Promise<string[]> {
   const entries = await readdir(MIGRATIONS_FOLDER, { withFileTypes: true });
   return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".sql") && !entry.name.endsWith(".down.sql"))
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b));
 }
