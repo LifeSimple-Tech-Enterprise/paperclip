@@ -38,6 +38,14 @@ export function validateInstanceConfig(
   // hold a Paperclip secret UUID rather than a raw value. The format is a UI
   // hint only — UUID validation happens in the secrets handler at resolve time.
   ajv.addFormat("secret-ref", { validate: () => true });
+  // Register the `encrypted` annotation keyword used by plugin manifests to flag
+  // fields routed through at-rest encryption. It is informational only — no
+  // validation behaviour — but Ajv strict mode would otherwise reject the schema.
+  ajv.addKeyword({
+    keyword: "encrypted",
+    schemaType: "boolean",
+    metaSchema: { type: "boolean" },
+  });
   const validate = ajv.compile(schema);
   const valid = validate(configJson);
 
