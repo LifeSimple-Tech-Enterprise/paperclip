@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult, PaperclipWakeEnvelope } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -55,6 +55,8 @@ interface ClaudeExecutionInput {
   agent: AdapterExecutionContext["agent"];
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  /** Stage 1 (LIF-382): canonical wake envelope — preferred over context.* fields when present. */
+  wake?: PaperclipWakeEnvelope;
   executionTarget?: ReturnType<typeof readAdapterExecutionTarget>;
   authToken?: string;
 }
@@ -144,9 +146,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
-  env.PAPERCLIP_RUN_ID = runId;
 
+  // Stage 1 (LIF-382): build wake env from legacy context fields first (backward compat),
+  // then overwrite with canonical ctx.wake fields so the canonical source always wins.
+  const legacyWakeEnv: Record<string, string> = {};
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
@@ -172,24 +175,20 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     : [];
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
 
-  if (wakeTaskId) {
-    env.PAPERCLIP_TASK_ID = wakeTaskId;
-  }
-  if (wakeReason) {
-    env.PAPERCLIP_WAKE_REASON = wakeReason;
-  }
-  if (wakeCommentId) {
-    env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  }
-  if (approvalId) {
-    env.PAPERCLIP_APPROVAL_ID = approvalId;
-  }
-  if (approvalStatus) {
-    env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  }
-  if (linkedIssueIds.length > 0) {
-    env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  }
+  if (wakeTaskId) legacyWakeEnv.PAPERCLIP_TASK_ID = wakeTaskId;
+  if (wakeReason) legacyWakeEnv.PAPERCLIP_WAKE_REASON = wakeReason;
+  if (wakeCommentId) legacyWakeEnv.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+  if (approvalId) legacyWakeEnv.PAPERCLIP_APPROVAL_ID = approvalId;
+  if (approvalStatus) legacyWakeEnv.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+  if (linkedIssueIds.length > 0) legacyWakeEnv.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+
+  const env: Record<string, string> = {
+    ...legacyWakeEnv,
+    // canonical ctx.wake overwrites legacy context.* fields when available
+    ...buildPaperclipEnv(agent, input.wake),
+  };
+  env.PAPERCLIP_RUN_ID = runId;
+
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
@@ -338,6 +337,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent,
     config,
     context,
+    wake: ctx.wake,
     executionTarget,
     authToken,
   });

@@ -338,21 +338,28 @@ function resolveClaimedApiKeyPath(value: unknown): string {
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
+
+  // Stage 1 (LIF-382): legacy wakePayload (ctx.context.paperclipWake) is the fallback;
+  // ctx.wake is the canonical source and takes priority when present.
+  const legacyWakeEnv: Record<string, string> = {};
+  if (wakePayload.taskId) legacyWakeEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
+  if (wakePayload.wakeReason) legacyWakeEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
+  if (wakePayload.wakeCommentId) legacyWakeEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
+  if (wakePayload.approvalId) legacyWakeEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;
+  if (wakePayload.approvalStatus) legacyWakeEnv.PAPERCLIP_APPROVAL_STATUS = wakePayload.approvalStatus;
+  if (wakePayload.issueIds.length > 0) {
+    legacyWakeEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
+  }
+
   const paperclipEnv: Record<string, string> = {
-    ...buildPaperclipEnv(ctx.agent),
+    ...legacyWakeEnv,
+    // ctx.wake fields overwrite legacy fallback values when available
+    ...buildPaperclipEnv(ctx.agent, ctx.wake),
     PAPERCLIP_RUN_ID: ctx.runId,
   };
 
   if (paperclipApiUrlOverride) {
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
-  }
-  if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
-  if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
-  if (wakePayload.wakeCommentId) paperclipEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
-  if (wakePayload.approvalId) paperclipEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;
-  if (wakePayload.approvalStatus) paperclipEnv.PAPERCLIP_APPROVAL_STATUS = wakePayload.approvalStatus;
-  if (wakePayload.issueIds.length > 0) {
-    paperclipEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
   }
 
   return paperclipEnv;

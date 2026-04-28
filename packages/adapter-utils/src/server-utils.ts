@@ -812,7 +812,23 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+/**
+ * Minimal wake envelope shape accepted by buildPaperclipEnv.
+ * Defined inline to avoid a circular import from the types package.
+ */
+interface WakeEnvelopeForEnv {
+  reason?: string | null;
+  taskId?: string | null;
+  runId?: string | null;
+  commentId?: string | null;
+  approvalId?: string | null;
+  linkedIssueIds?: string[];
+}
+
+export function buildPaperclipEnv(
+  agent: { id: string; companyId: string },
+  wake?: WakeEnvelopeForEnv,
+): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -832,6 +848,19 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+
+  // Emit wake-context env vars from canonical envelope (LIF-382 / Stage 1)
+  if (wake) {
+    if (wake.reason) vars.PAPERCLIP_WAKE_REASON = wake.reason;
+    if (wake.taskId) vars.PAPERCLIP_TASK_ID = wake.taskId;
+    if (wake.runId) vars.PAPERCLIP_RUN_ID = wake.runId;
+    if (wake.commentId) vars.PAPERCLIP_WAKE_COMMENT_ID = wake.commentId;
+    if (wake.approvalId) vars.PAPERCLIP_WAKE_APPROVAL_ID = wake.approvalId;
+    if (wake.linkedIssueIds && wake.linkedIssueIds.length > 0) {
+      vars.PAPERCLIP_WAKE_LINKED_ISSUE_IDS = wake.linkedIssueIds.join(",");
+    }
+  }
+
   return vars;
 }
 

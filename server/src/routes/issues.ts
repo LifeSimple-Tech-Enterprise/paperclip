@@ -2799,6 +2799,84 @@ export function issueRoutes(
       entityId: released.id,
     });
 
+    // Stage 1 (LIF-382): legacy /release is now an alias for releaseHard; add deprecation header.
+    res.set("X-Paperclip-Deprecated", "Use /release-hard or /release-soft instead");
+    res.json(released);
+  });
+
+  // Stage 1 (LIF-382): /release-soft — clears execution lock only; assignee and status unchanged.
+  router.post("/issues/:id/release-soft", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const actorRunId = requireAgentRunId(req, res);
+    if (req.actor.type === "agent" && !actorRunId) return;
+
+    const released = await svc.releaseSoft(
+      id,
+      req.actor.type === "agent" ? req.actor.agentId : undefined,
+      actorRunId,
+    );
+    if (!released) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: released.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.released_soft",
+      entityType: "issue",
+      entityId: released.id,
+    });
+
+    res.json(released);
+  });
+
+  // Stage 1 (LIF-382): /release-hard — full reset (clears assignee + resets status to todo).
+  router.post("/issues/:id/release-hard", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const actorRunId = requireAgentRunId(req, res);
+    if (req.actor.type === "agent" && !actorRunId) return;
+
+    const released = await svc.releaseHard(
+      id,
+      req.actor.type === "agent" ? req.actor.agentId : undefined,
+      actorRunId,
+    );
+    if (!released) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: released.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.released_hard",
+      entityType: "issue",
+      entityId: released.id,
+    });
+
     res.json(released);
   });
 

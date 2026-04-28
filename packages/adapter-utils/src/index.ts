@@ -6,6 +6,7 @@ export type {
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  PaperclipWakeEnvelope,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,

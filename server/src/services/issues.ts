@@ -43,6 +43,7 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
+import { evaluateCheckout } from "../wake/fsm.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -2799,7 +2800,8 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      // REFACTOR-LIF-371: done_status_flip — checkout unconditionally flips issue to in_progress; issues arriving from done/blocked get silently reflipped
+      // Stage 1 (LIF-382): FSM-gated checkout — backlog/todo → in_progress; all other statuses are preserved.
+      // Uses a SQL CASE to atomically derive the post-checkout status from the pre-checkout status.
       const updated = await db
         .update(issues)
         .set({
@@ -2807,7 +2809,7 @@ export function issueService(db: Db) {
           assigneeUserId: null,
           checkoutRunId,
           executionRunId: checkoutRunId,
-          status: "in_progress",
+          status: sql<string>`CASE WHEN ${issues.status} IN ('backlog', 'todo') THEN 'in_progress' ELSE ${issues.status} END`,
           startedAt: now,
           updatedAt: now,
         })
@@ -3021,6 +3023,106 @@ export function issueService(db: Db) {
       }
 
       // REFACTOR-LIF-371: release_wipes_state — unconditionally resets to todo + null assignee; no handoff record created
+      const updated = await db
+        .update(issues)
+        .set({
+          status: "todo",
+          assigneeAgentId: null,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
+
+    // Stage 1 (LIF-382): releaseSoft — clears execution lock only; assignee and status are preserved.
+    // Use when the agent wants to yield the checkout without abandoning the issue.
+    releaseSoft: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
+      await clearExecutionRunIfTerminal(id);
+      const existing = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!existing) return null;
+      if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+        throw conflict("Only assignee can release issue");
+      }
+      if (
+        actorAgentId &&
+        existing.status === "in_progress" &&
+        existing.assigneeAgentId === actorAgentId &&
+        existing.checkoutRunId &&
+        !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
+      ) {
+        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
+        if (!stale) {
+          throw conflict("Only checkout run can release issue", {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            checkoutRunId: existing.checkoutRunId,
+            actorRunId: actorRunId ?? null,
+          });
+        }
+      }
+
+      const updated = await db
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
+
+    // Stage 1 (LIF-382): releaseHard — full reset: clears assignee, resets status to todo,
+    // and clears all execution lock fields. Equivalent to the legacy release behaviour.
+    releaseHard: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
+      await clearExecutionRunIfTerminal(id);
+      const existing = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!existing) return null;
+      if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+        throw conflict("Only assignee can release issue");
+      }
+      if (
+        actorAgentId &&
+        existing.status === "in_progress" &&
+        existing.assigneeAgentId === actorAgentId &&
+        existing.checkoutRunId &&
+        !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
+      ) {
+        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
+        if (!stale) {
+          throw conflict("Only checkout run can release issue", {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            checkoutRunId: existing.checkoutRunId,
+            actorRunId: actorRunId ?? null,
+          });
+        }
+      }
+
       const updated = await db
         .update(issues)
         .set({

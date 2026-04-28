@@ -32,6 +32,8 @@ export interface WakeEventsBaseline {
   windowStart: string;
   windowEnd: string;
   totalWakes: number;
+  /** Wakes where checkout changed the issue status (prior != post). Stage 1 (LIF-382). */
+  silentStatusFlips: number;
   byReasonAndTransition: ByReasonAndTransitionRow[];
   suppressed: SuppressedRow[];
   ctxFieldUsage: CtxFieldUsageRow[];
@@ -94,10 +96,24 @@ export function wakeEventsBaselineService(db: Db) {
         .where(baseWhere)
         .groupBy(agentWakeupRequests.ctxFieldUsed);
 
+      // Stage 1 (LIF-382): count wakes where checkout silently changed issue status.
+      const [{ silentFlips }] = await db
+        .select({ silentFlips: sql<number>`count(*)` })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            baseWhere,
+            isNotNull(agentWakeupRequests.priorIssueStatus),
+            isNotNull(agentWakeupRequests.postCheckoutIssueStatus),
+            sql`${agentWakeupRequests.postCheckoutIssueStatus} != ${agentWakeupRequests.priorIssueStatus}`,
+          ),
+        );
+
       return {
         windowStart: since.toISOString(),
         windowEnd: until.toISOString(),
         totalWakes: Number(total ?? 0),
+        silentStatusFlips: Number(silentFlips ?? 0),
         byReasonAndTransition: byReasonRows.map((row) => ({
           wakeReason: row.wakeReason ?? null,
           priorStatus: row.priorStatus ?? null,

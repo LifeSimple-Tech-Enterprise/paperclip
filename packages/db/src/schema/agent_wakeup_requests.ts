@@ -28,6 +28,8 @@ export const agentWakeupRequests = pgTable(
     ctxFieldUsed: text("ctx_field_used"),
     firedTransitions: jsonb("fired_transitions").$type<string[]>(),
     suppressedReason: text("suppressed_reason"),
+    // LIF-382: FSM transition key emitted at checkout (additive nullable, Stage 1)
+    declaredTransition: text("declared_transition"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

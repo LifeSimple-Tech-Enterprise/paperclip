@@ -119,12 +119,39 @@ export interface AdapterInvocationMeta {
   context?: Record<string, unknown>;
 }
 
+/**
+ * Canonical wake context forwarded from the server to every adapter.
+ * Adapters should read `ctx.wake.*` for wake-specific fields and fall back
+ * to legacy `ctx.context` / `ctx.config` paths (Stage 2 will remove legacy).
+ */
+export interface PaperclipWakeEnvelope {
+  reason: string | null;
+  /** issue id (the Paperclip task being worked on) */
+  taskId: string | null;
+  /** heartbeat run id for the current execution */
+  runId: string | null;
+  /** comment id that triggered this wake, if any */
+  commentId: string | null;
+  /** approval id, if this wake was triggered by an approval decision */
+  approvalId: string | null;
+  /** linked issue ids (blockers resolved, children completed, etc.) */
+  linkedIssueIds: string[];
+  /** arbitrary wake payload from the wakeup request */
+  payload: Record<string, unknown> | null;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  /**
+   * Canonical wake envelope — the primary source of wake context for Stage 1+.
+   * Adapters should prefer `ctx.wake.*` over `ctx.context` / `ctx.config` wake fields.
+   * Legacy fallback paths remain active in Stage 1; Stage 2 will remove them.
+   */
+  wake?: PaperclipWakeEnvelope;
   executionTarget?: AdapterExecutionTarget | null;
   /**
    * Legacy remote transport view. Prefer `executionTarget`, which is the

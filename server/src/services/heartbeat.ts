@@ -77,6 +77,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { buildWakeEnvelope } from "../wake/envelope.js";
 import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   isVerifiedIssueTreeControlInteractionWake,
@@ -5454,12 +5455,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
       // REFACTOR-LIF-371: adapter_ctx_context_vs_config — adapter receives both ctx.context (wake snapshot) and ctx.config (adapter config); adapters conflate the two sources
+      // Stage 1 (LIF-382): build canonical wake envelope from the run's contextSnapshot so adapters
+      // receive ctx.wake.* as the primary source for PAPERCLIP_WAKE_REASON, TASK_ID, etc.
+      const wakeEnvelope = buildWakeEnvelope({
+        wakeRow: null,
+        claimRow: run,
+        issueId: issueId ?? null,
+      });
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
         config: runtimeConfig,
         context,
+        wake: wakeEnvelope,
         executionTarget,
         executionTransport: remoteExecution
           ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
@@ -6409,6 +6418,72 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // Stage 1 (LIF-382): self-wake guard — suppress comment-driven wakes when the triggering
+    // comment was authored by this same agent (prevents agents from waking themselves in a loop).
+    // Override: reason === "manual" or payload?.bypassThrottle.
+    if (
+      reason !== "manual" &&
+      !payload?.bypassThrottle &&
+      (reason === "issue_commented" || reason === "issue_comment_mentioned") &&
+      wakeCommentId &&
+      issueId
+    ) {
+      const triggerComment = await db
+        .select({ authorAgentId: issueComments.authorAgentId })
+        .from(issueComments)
+        .where(eq(issueComments.id, wakeCommentId))
+        .then((rows) => rows[0] ?? null);
+      if (triggerComment?.authorAgentId === agentId) {
+        logger.info(
+          { agentId, issueId, wakeCommentId, reason },
+          "wake.suppressed self_wake_guard",
+        );
+        await writeSkippedRequest("self_wake_guard");
+        return null;
+      }
+    }
+
+    // Stage 1 (LIF-382): continuation throttle — suppress issue_continuation_needed wakes
+    // when the last 3 runs for this agent had the same prior issue status (no forward progress).
+    if (
+      reason !== "manual" &&
+      !payload?.bypassThrottle &&
+      reason === "issue_continuation_needed" &&
+      issueId
+    ) {
+      const recentContinuations = await db
+        .select({
+          priorIssueStatus: agentWakeupRequests.priorIssueStatus,
+          postCheckoutIssueStatus: agentWakeupRequests.postCheckoutIssueStatus,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.reason, "issue_continuation_needed"),
+            eq(agentWakeupRequests.status, "finished"),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.createdAt))
+        .limit(3);
+      if (
+        recentContinuations.length >= 3 &&
+        recentContinuations.every(
+          (w) =>
+            w.priorIssueStatus != null &&
+            w.priorIssueStatus === recentContinuations[0]!.priorIssueStatus &&
+            w.postCheckoutIssueStatus === w.priorIssueStatus,
+        )
+      ) {
+        logger.info(
+          { agentId, issueId, reason, stuckStatus: recentContinuations[0]!.priorIssueStatus },
+          "wake.suppressed continuation_throttle",
+        );
+        await writeSkippedRequest("continuation_throttle");
+        return null;
+      }
     }
 
     if (issueId) {

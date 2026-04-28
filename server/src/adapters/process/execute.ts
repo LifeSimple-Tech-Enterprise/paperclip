@@ -19,8 +19,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const args = asStringArray(config.args);
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);
-  // REFACTOR-LIF-371: process_adapter_no_wake_env — buildPaperclipEnv seeds only agent identity env vars; wake-context fields (PAPERCLIP_TASK_ID etc.) come from the harness injection layer, not here
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  // Stage 1 (LIF-382): pass ctx.wake so buildPaperclipEnv emits PAPERCLIP_WAKE_REASON/TASK_ID/RUN_ID etc.
+  // Legacy harness-injection is no longer the only source; ctx.wake is now canonical.
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent, ctx.wake) };
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
