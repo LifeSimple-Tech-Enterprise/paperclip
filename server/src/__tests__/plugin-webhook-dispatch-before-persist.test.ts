@@ -6,6 +6,7 @@
  *   - ok+unresolved → row inserted with status="unresolved"
  *   - !ok+401      → NO row inserted, caller gets 401
  *   - dispatch_failed → row inserted with status="dispatch_failed", caller gets 502
+ *   - null worker response (LIF-364) → NO row inserted, caller gets 401 invalid_signature
  */
 
 import express from "express";
@@ -121,6 +122,7 @@ async function createApp(options: {
   workerResponse?: unknown;
   workerShouldThrow?: boolean;
   workerError?: Error;
+  workerReturnsNullish?: "null" | "undefined";
   db?: unknown;
 }) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
@@ -128,11 +130,17 @@ async function createApp(options: {
     import("../middleware/index.js"),
   ]);
 
+  const resolveValue = options.workerReturnsNullish === "null"
+    ? null
+    : options.workerReturnsNullish === "undefined"
+      ? undefined
+      : options.workerResponse ?? { ok: true, status: 202 };
+
   const workerManager = {
     isRunning: vi.fn().mockReturnValue(true),
     call: options.workerShouldThrow
       ? vi.fn().mockRejectedValue(options.workerError ?? new Error("worker crashed"))
-      : vi.fn().mockResolvedValue(options.workerResponse ?? { ok: true, status: 202 }),
+      : vi.fn().mockResolvedValue(resolveValue),
     getWorker: vi.fn().mockReturnValue(null),
   };
 
@@ -266,6 +274,32 @@ describe.sequential("POST /api/plugins/:pluginId/webhooks/:endpointKey — dispa
 
     expect(res.status).toBe(502);
     expect(res.body).toMatchObject({ deliveryId: DELIVERY_ID, status: "dispatch_failed" });
+  });
+
+  // Regression: LIF-364 — workerManager.call returns null (not throws) when the
+  // plugin worker has no config/secret yet. Before the null-guard at
+  // plugins.ts:2330–2354 this dereferenced `.ok` and surfaced as HTTP 500.
+  // Expected behaviour: coerce nullish to { ok:false, status:401, reason:"invalid_signature" }.
+  it.each([
+    ["null", "null" as const],
+    ["undefined", "undefined" as const],
+  ])("nullish worker response (%s): writes NO delivery row and returns 401 invalid_signature", async (_label, nullish) => {
+    readyPlugin();
+    const { db, insertedRows } = makeDbMock();
+    const { app, workerManager } = await createApp({
+      db,
+      workerReturnsNullish: nullish,
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/webhooks/ci_event`)
+      .send({ unsigned: true });
+
+    expect(workerManager.call).toHaveBeenCalledOnce();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(insertedRows).toHaveLength(0);
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ status: "rejected", reason: "invalid_signature" });
   });
 
   it("returns 404 when plugin is not found", async () => {
