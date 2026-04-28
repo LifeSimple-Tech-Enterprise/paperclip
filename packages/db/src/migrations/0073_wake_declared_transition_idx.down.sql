@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS agent_wakeup_requests_declared_transition_idx;

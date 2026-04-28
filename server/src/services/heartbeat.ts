@@ -78,6 +78,7 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { buildWakeEnvelope } from "../wake/envelope.js";
+import { evaluateCheckout, type IssueStatus } from "../wake/fsm.js";
 import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   isVerifiedIssueTreeControlInteractionWake,
@@ -4669,12 +4670,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         suppressed: null,
         ts: new Date().toISOString(),
       }, "wake.event");
+      // LIF-384 Stage 1 follow-up: stamp declaredTransition so Acceptance #1 measurement can run.
+      // evaluateCheckout is a pure FSM lookup on the pre-checkout status; no IO.
+      const checkoutFsmResult = claimPriorStatus ? evaluateCheckout(claimPriorStatus as IssueStatus) : null;
+      const declaredTransition = checkoutFsmResult
+        ? checkoutFsmResult.kind === "transition"
+          ? `checkout:${claimPriorStatus}->${checkoutFsmResult.target}`
+          : `checkout:preserve(${claimPriorStatus})`
+        : null;
       if (run.wakeupRequestId) {
         await db
           .update(agentWakeupRequests)
           .set({
             postCheckoutIssueStatus: claimPostStatus,
             firedTransitions: claimFiredTransitions,
+            ...(declaredTransition ? { declaredTransition } : {}),
             updatedAt: new Date(),
           })
           .where(eq(agentWakeupRequests.id, run.wakeupRequestId));

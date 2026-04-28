@@ -1,4 +1,4 @@
-import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, gte, isNotNull, isNull, lte, sql, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
 
@@ -28,12 +28,19 @@ export interface CtxFieldUsageRow {
   count: number;
 }
 
+export interface DeclaredTransitionRow {
+  transition: string;
+  count: number;
+}
+
 export interface WakeEventsBaseline {
   windowStart: string;
   windowEnd: string;
   totalWakes: number;
   /** Wakes where checkout changed the issue status (prior != post). Stage 1 (LIF-382). */
   silentStatusFlips: number;
+  /** Declared checkout transitions grouped by kind. Stage 1 follow-up (LIF-384). */
+  declaredTransitions: DeclaredTransitionRow[];
   byReasonAndTransition: ByReasonAndTransitionRow[];
   suppressed: SuppressedRow[];
   ctxFieldUsage: CtxFieldUsageRow[];
@@ -109,11 +116,26 @@ export function wakeEventsBaselineService(db: Db) {
           ),
         );
 
+      // Stage 1 follow-up (LIF-384): group by declaredTransition so Acceptance #1 is measurable.
+      const declaredTransitionRows = await db
+        .select({
+          transition: agentWakeupRequests.declaredTransition,
+          count: sql<number>`count(*)`,
+        })
+        .from(agentWakeupRequests)
+        .where(and(baseWhere, isNotNull(agentWakeupRequests.declaredTransition)))
+        .groupBy(agentWakeupRequests.declaredTransition)
+        .orderBy(desc(sql<number>`count(*)`));
+
       return {
         windowStart: since.toISOString(),
         windowEnd: until.toISOString(),
         totalWakes: Number(total ?? 0),
         silentStatusFlips: Number(silentFlips ?? 0),
+        declaredTransitions: declaredTransitionRows.map((row) => ({
+          transition: row.transition ?? "",
+          count: Number(row.count),
+        })),
         byReasonAndTransition: byReasonRows.map((row) => ({
           wakeReason: row.wakeReason ?? null,
           priorStatus: row.priorStatus ?? null,
