@@ -6374,15 +6374,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
-    const writeSkippedRequest = async (skipReason: string) => {
+    const writeSkippedRequest = async (originalReason: string | null, suppressedReason: string) => {
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
         source,
         triggerDetail,
-        reason: skipReason,
+        reason: originalReason,
         payload,
         status: "skipped",
+        suppressedReason,
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
@@ -6404,7 +6405,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId,
     });
     if (budgetBlock) {
-      await writeSkippedRequest("budget.blocked");
+      await writeSkippedRequest(reason, "budget.blocked");
       throw conflict(budgetBlock.reason, {
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
@@ -6422,11 +6423,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const policy = parseHeartbeatPolicy(agent);
 
     if (source === "timer" && !policy.enabled) {
-      await writeSkippedRequest("heartbeat.disabled");
+      await writeSkippedRequest(reason, "heartbeat.disabled");
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
-      await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      await writeSkippedRequest(reason, "heartbeat.wakeOnDemand.disabled");
       return null;
     }
 
@@ -6450,7 +6451,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { agentId, issueId, wakeCommentId, reason },
           "wake.suppressed self_wake_guard",
         );
-        await writeSkippedRequest("self_wake_guard");
+        await writeSkippedRequest(reason, "self_wake_guard");
         return null;
       }
     }
@@ -6491,7 +6492,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { agentId, issueId, reason, stuckStatus: recentContinuations[0]!.priorIssueStatus },
           "wake.suppressed continuation_throttle",
         );
-        await writeSkippedRequest("continuation_throttle");
+        await writeSkippedRequest(reason, "continuation_throttle");
         return null;
       }
     }
@@ -6509,7 +6510,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
 
         if (!treeHoldInteractionWake) {
-          await writeSkippedRequest("issue_tree_hold_active");
+          await writeSkippedRequest(reason, "issue_tree_hold_active");
           await logActivity(db, {
             companyId: agent.companyId,
             actorType: "system",
