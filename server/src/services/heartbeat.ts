@@ -6474,7 +6474,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           and(
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.reason, "issue_continuation_needed"),
-            eq(agentWakeupRequests.status, "finished"),
+            eq(agentWakeupRequests.status, "completed"),
           ),
         )
         .orderBy(desc(agentWakeupRequests.createdAt))
