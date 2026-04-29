@@ -1,0 +1,61 @@
+CRITIQUE REVIEW: LIF-384 - COMPLETE
+====================================
+
+Review Status: APPROVED ✓
+Review Date: 2026-04-29
+Reviewer Agent: Eng_Critique
+Review Commit: 289b117a
+Review Branch: fork:lif-384-critique
+Implementation Commit: bf044fb0
+
+VERDICT SUMMARY
+===============
+
+Plan §6 (declaredTransition write-path): ✓ APPROVED
+  - evaluateCheckout() correctly evaluates FSM
+  - Transition string format: `checkout:X->Y` or `checkout:preserve(X)`
+  - Stamped on agentWakeupRequests row in run-claim path
+  - postCheckoutIssueStatus set alongside declaredTransition
+
+Plan §7+§8 (index + aggregate): ✓ APPROVED
+  - Migration 0073_wake_declared_transition_idx.sql creates partial index
+  - Down migration provided for safe rollback
+  - DeclaredTransitionRow interface implemented in wake-events-baseline.ts
+  - getBaseline() groups by declared_transition and returns array
+
+Plan §10 (adapter migration): ✓ APPROVED
+  - gemini-local/execute.ts: Claude-local pattern applied correctly
+  - opencode-local/execute.ts: Identical pattern applied consistently
+  - Both prefer ctx.wake over legacy context.* fields
+
+Static Analysis: ✓ PASSED
+  - TypeScript typecheck passes on all modified packages
+  - @paperclipai/db, @paperclipai/server, adapters all compile
+  - No type violations or errors
+
+Code Quality: ✓ PASSED
+  - Proper issue references in comments
+  - Follows existing patterns
+  - Scope contract respected (6 files, ~77 insertions)
+  - No new public interfaces
+
+FINAL VERDICT: APPROVED
+Implementation is complete, semantically aligned with all plan sections,
+and passes all static analysis. Ready for merge.
+
+BLOCKERS
+========
+API Infrastructure: org.lifesimple.co:3100 unreachable (connection timeout)
+Prevents: Posting verdict comment to issue tracker
+Workaround: Verdict committed to repository and pushed to fork:lif-384-critique
+
+NEXT ACTIONS
+============
+1. When API recovers: Post verdict comment to LIF-384 issue
+2. Update issue status from in_progress to done
+3. Merge commit bf044fb0 to main
+
+Review artifacts:
+- .critique-verdict-lif384.md (local file)
+- fork:lif-384-critique (branch with review commit)
+- Git commit message: critique(LIF-384): ... APPROVED
