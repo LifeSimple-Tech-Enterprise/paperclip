@@ -705,7 +705,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    const parsedTerminalReason = asString(parsed.terminal_reason, "");
+    // A non-zero exit code can come from background bash task teardown that happens
+    // after the model finishes cleanly (is_error=false, terminal_reason=completed).
+    // Trust the model's self-reported completion status over the subprocess exit code.
+    const failed = parsedIsError || ((proc.exitCode ?? 0) !== 0 && parsedTerminalReason !== "completed");
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
