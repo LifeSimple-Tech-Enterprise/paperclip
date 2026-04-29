@@ -335,17 +335,15 @@ describeEmbeddedPostgres("aggregateHandoffsMerge (via heartbeatService)", () => 
   }, 20_000);
 
   afterEach(async () => {
-    await db.execute(sql.raw(`DELETE FROM handoffs`));
-    await db.delete(issueComments);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
-    await db.delete(issues);
-    await db.delete(executionWorkspaces);
-    await db.delete(projectWorkspaces);
-    await db.delete(projects);
-    await db.delete(goals);
-    await db.delete(agents);
-    await db.delete(companies);
+    // Use CASCADE to handle all FK-dependent tables (enqueueWakeup may write to
+    // agent_runtime_state, agent_wakeup_requests, company_skills, etc.).
+    await db.execute(sql.raw(`
+      TRUNCATE handoffs, issue_comments, activity_log, heartbeat_runs,
+               agent_wakeup_requests, agent_runtime_state,
+               issues, execution_workspaces, project_workspaces, projects,
+               goals, agents, companies
+      RESTART IDENTITY CASCADE
+    `));
     vi.clearAllMocks();
   });
 
@@ -747,18 +745,29 @@ describeEmbeddedPostgres("aggregateHandoffsMerge (via heartbeatService)", () => 
       const { companyId, agentId, issueId, workspaceDir } = await seedBaseData(db);
       const { logger } = await import("../middleware/logger.js");
 
-      // cherry-pick succeeds, but reset --hard (epilogue) fails
+      // cherry-pick succeeds, but the EPILOGUE reset --hard fails.
+      // The prepurge ALSO calls reset --hard HEAD before Phase 2, so we track
+      // call count: the first reset call is prepurge (must succeed), subsequent
+      // reset calls are epilogue (should fail).
+      let resetCallCount = 0;
       mockExecFile.mockImplementation(
         (_cmd: string, args: string[], _opts: unknown, cb: Function) => {
           const argsArr = args as string[];
           if (argsArr.includes("reset") && argsArr.includes("--hard") && argsArr.includes("HEAD")) {
-            const err = Object.assign(new Error("reset failed"), {
-              code: 1,
-              stdout: "",
-              stderr: "error: could not reset\n",
-              killed: false,
-            });
-            cb(err, { stdout: "", stderr: err.stderr });
+            resetCallCount++;
+            if (resetCallCount > 1) {
+              // Epilogue reset — fail it
+              const err = Object.assign(new Error("reset failed"), {
+                code: 1,
+                stdout: "",
+                stderr: "error: could not reset\n",
+                killed: false,
+              });
+              cb(err, { stdout: "", stderr: err.stderr });
+            } else {
+              // Prepurge reset — succeed
+              cb(null, { stdout: "", stderr: "" });
+            }
           } else if (argsArr.includes("cherry-pick") && argsArr.includes("--abort")) {
             // Swallow abort
             const err = Object.assign(new Error("no cherry-pick"), {

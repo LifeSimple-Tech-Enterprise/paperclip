@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -7887,6 +7888,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     // Phase 3: Tx2 bookkeeping with OCC guard
     const claimMergedAt = now;
+    // Collect wakeups to fire AFTER all transactions commit (enqueueWakeup uses db,
+    // calling it inside a db.transaction() callback would deadlock the connection pool).
+    const pendingWakeups: Array<{ agentId: string; opts: Parameters<typeof enqueueWakeup>[1] }> = [];
 
     for (const claimed of claimedHandoffs) {
       await db.transaction(async (tx) => {
@@ -7983,16 +7987,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             details: { conflictReason, branch: claimed.branch },
           });
 
-          // Wake fromAgentId via issue_commented
+          // Schedule post-commit wake for fromAgentId (fired after tx commits below)
           if (claimed.fromAgentId) {
-            await enqueueWakeup(claimed.fromAgentId, {
-              source: "automation",
-              triggerDetail: "system",
-              reason: "issue_commented",
-              payload: { issueId, handoffId: claimed.id, conflictReason },
-              requestedByActorType: "system",
-              requestedByActorId: "heartbeat_aggregate",
-              contextSnapshot: { issueId, wakeReason: "issue_commented" },
+            pendingWakeups.push({
+              agentId: claimed.fromAgentId,
+              opts: {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "issue_commented",
+                payload: { issueId, handoffId: claimed.id, conflictReason },
+                requestedByActorType: "system",
+                requestedByActorId: "heartbeat_aggregate",
+                contextSnapshot: { issueId, wakeReason: "issue_commented" },
+              },
             });
           }
 
@@ -8016,6 +8023,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             logger.warn({ handoffId: claimed.id }, "aggregate_zombie_abort: OCC guard triggered on transient");
           }
         }
+      });
+    }
+
+    // Fire post-commit wakeups (outside any transaction to avoid connection pool deadlock)
+    for (const { agentId, opts } of pendingWakeups) {
+      await enqueueWakeup(agentId, opts).catch((err) => {
+        logger.error({ err, agentId }, "aggregate: post-commit wakeup failed (non-fatal)");
       });
     }
 
@@ -8163,7 +8177,7 @@ async function runPhase2EpilogueCleanup(workspaceDir: string): Promise<void> {
 // Recursive file finder (replaces fast-glob for lock file sweep)
 async function findFilesRecursive(dir: string, suffix: string): Promise<string[]> {
   const results: string[] = [];
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
