@@ -103,7 +103,9 @@ export function wakeEventsBaselineService(db: Db) {
         .where(baseWhere)
         .groupBy(agentWakeupRequests.ctxFieldUsed);
 
-      // Stage 1 (LIF-382): count wakes where checkout silently changed issue status.
+      // Stage 1 (LIF-382): count wakes where checkout silently changed issue status
+      // WITHOUT a declared FSM transition (LIF-390: filter out declared transitions so AC #1 = 0 means
+      // every flip went through evaluateCheckout).
       const [{ silentFlips }] = await db
         .select({ silentFlips: sql<number>`count(*)` })
         .from(agentWakeupRequests)
@@ -113,6 +115,7 @@ export function wakeEventsBaselineService(db: Db) {
             isNotNull(agentWakeupRequests.priorIssueStatus),
             isNotNull(agentWakeupRequests.postCheckoutIssueStatus),
             sql`${agentWakeupRequests.postCheckoutIssueStatus} != ${agentWakeupRequests.priorIssueStatus}`,
+            isNull(agentWakeupRequests.declaredTransition),
           ),
         );
 
