@@ -23,6 +23,8 @@ import {
   activityLog,
   companySkills as companySkillsTable,
   documentRevisions,
+  executionWorkspaces,
+  handoffs,
   issueDocuments,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -151,6 +153,20 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
+
+// LIF-374 Stage 2: Handoff aggregate constants
+// AGGREGATE_LEASE_INTERVAL_MS must be set before AGGREGATE_GIT_TIMEOUT_MS
+const AGGREGATE_LEASE_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+const AGGREGATE_GIT_TIMEOUT_MS = AGGREGATE_LEASE_INTERVAL_MS - 60_000; // 14 minutes
+const PHASE2_PREPURGE_TIMEOUT_MS = 60_000; // 60 seconds
+// Assert at module load time that AGGREGATE_GIT_TIMEOUT_MS is sane
+if (AGGREGATE_GIT_TIMEOUT_MS <= 0) {
+  throw new Error("AGGREGATE_GIT_TIMEOUT_MS must be positive");
+}
+if (PHASE2_PREPURGE_TIMEOUT_MS <= 0) {
+  throw new Error("PHASE2_PREPURGE_TIMEOUT_MS must be positive");
+}
+
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
@@ -7695,5 +7711,472 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1);
       return run ?? null;
     },
+
+    runHandoffAggregateMerge,
   };
+
+  // LIF-374 Stage 2: Aggregate-PR rewriter (3-phase pattern)
+  // Processes ALL un-merged accepted review handoffs for an issue, ASC by decidedAt.
+  async function runHandoffAggregateMerge(opts: {
+    issueId: string;
+    workspaceDir: string;
+    fromAgentId?: string | null;
+    now?: Date;
+  }): Promise<{
+    outcome: "success" | "conflict" | "transient" | "skipped";
+    reason?: string;
+    mergedSha?: string;
+    conflictReason?: string;
+    alreadyApplied?: boolean;
+  }> {
+    const { issueId, workspaceDir } = opts;
+    const now = opts.now ?? new Date();
+
+    // Phase 1: Tx1 — leased atomic claim (15-min lease)
+    // Claim ALL un-merged accepted reviews sorted by decidedAt ASC.
+    const leaseCutoff = new Date(now.getTime() - AGGREGATE_LEASE_INTERVAL_MS);
+
+    const claimedHandoffs = await db.transaction(async (tx) => {
+      // Find all eligible handoffs (un-merged or lease expired)
+      const candidates = await tx
+        .select()
+        .from(handoffs)
+        .where(
+          and(
+            eq(handoffs.issueId, issueId),
+            eq(handoffs.kind, "review"),
+            eq(handoffs.status, "accepted"),
+            or(
+              isNull(handoffs.mergedAt),
+              lte(handoffs.mergedAt, leaseCutoff),
+            ),
+          ),
+        )
+        .orderBy(asc(handoffs.decidedAt));
+
+      if (candidates.length === 0) return [];
+
+      // Claim each candidate atomically (rowCount === 1 assertion)
+      const claimed: typeof candidates = [];
+      for (const candidate of candidates) {
+        const result = await tx
+          .update(handoffs)
+          .set({ mergedAt: now, updatedAt: now })
+          .where(
+            and(
+              eq(handoffs.id, candidate.id),
+              eq(handoffs.issueId, issueId),
+              eq(handoffs.kind, "review"),
+              eq(handoffs.status, "accepted"),
+              or(
+                isNull(handoffs.mergedAt),
+                lte(handoffs.mergedAt, leaseCutoff),
+              ),
+            ),
+          )
+          .returning();
+
+        if (result.length === 1) {
+          claimed.push(result[0]);
+        }
+        // If rowCount === 0: another heartbeat won the lease for this row; skip it
+      }
+
+      return claimed;
+    });
+
+    if (claimedHandoffs.length === 0) {
+      logger.info({ issueId }, "aggregate_skip: no eligible handoffs to claim");
+      return { outcome: "skipped" };
+    }
+
+    // Resolve baseBranch from the first handoff's chain
+    const firstHandoff = claimedHandoffs[0];
+    let baseBranch = firstHandoff.baseBranch;
+    if (!baseBranch && firstHandoff.parentHandoffId) {
+      const parent = await db
+        .select({ baseBranch: handoffs.baseBranch })
+        .from(handoffs)
+        .where(eq(handoffs.id, firstHandoff.parentHandoffId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      baseBranch = parent?.baseBranch ?? null;
+    }
+    if (!baseBranch) {
+      // Try execution workspace baseRef
+      const ws = await db
+        .select({ baseRef: executionWorkspaces.baseRef })
+        .from(issues)
+        .innerJoin(executionWorkspaces, eq(issues.executionWorkspaceId, executionWorkspaces.id))
+        .where(eq(issues.id, issueId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      baseBranch = ws?.baseRef ?? null;
+    }
+
+    if (!baseBranch) {
+      logger.warn({ issueId }, "aggregate: cannot resolve baseBranch, marking transient");
+      // Revert lease claims
+      await db
+        .update(handoffs)
+        .set({ mergedAt: null, updatedAt: new Date() })
+        .where(
+          sql`id = ANY(ARRAY[${claimedHandoffs.map((h) => h.id).join(",")}]::uuid[])`,
+        );
+      return { outcome: "transient", reason: "unresolved_base" };
+    }
+
+    // Phase 2 prologue prepurge (rev 17 board issue #2)
+    // Runs BEFORE phase2Start so its cost does NOT erode the budget.
+    let outcome: { kind: "success" | "conflict" | "transient"; __reason?: string; conflictReason?: string; alreadyApplied?: boolean } | null = null;
+
+    try {
+      await runPhase2Prepurge(workspaceDir);
+    } catch (err) {
+      const reason = "workspace_lockfile_prepurge_failed";
+      logger.error({ err, workspaceDir }, `aggregate_phase2: ${reason}`);
+      outcome = { kind: "transient", __reason: reason };
+    }
+
+    // Phase 2: execFile cherry-pick OUTSIDE any DB tx
+    const phase2Start = Date.now();
+    const phase2Deadline = phase2Start + AGGREGATE_GIT_TIMEOUT_MS;
+
+    function remainingBudget(): number {
+      const remaining = phase2Deadline - Date.now();
+      if (remaining <= 0) {
+        const err = new Error("aggregate_phase2_total_timeout");
+        (err as unknown as Record<string, unknown>).__aggregate_outcome = "transient";
+        (err as unknown as Record<string, unknown>).__reason = "aggregate_phase2_total_timeout";
+        throw err;
+      }
+      return remaining;
+    }
+
+    if (!outcome) {
+      try {
+        // Fetch the branch to ensure local object store is current
+        const branch = firstHandoff.branch!;
+        await execFile(
+          "git",
+          ["-C", workspaceDir, "fetch", "--no-tags", "--quiet", "origin",
+            `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+          { timeout: remainingBudget(), killSignal: "SIGTERM" },
+        );
+
+        // Range cherry-pick: baseBranch..verifiedSha (rev 15)
+        const verifiedSha = firstHandoff.verifiedSha!;
+        const cherryPickResult = await runGitCherryPick(workspaceDir, baseBranch, verifiedSha, remainingBudget());
+        outcome = cherryPickResult;
+      } catch (err: unknown) {
+        const errAny = err as Record<string, unknown>;
+        if (errAny.__aggregate_outcome === "transient") {
+          outcome = { kind: "transient", __reason: errAny.__reason as string };
+        } else {
+          logger.error({ err, workspaceDir }, "aggregate_phase2: unexpected error");
+          outcome = { kind: "transient", __reason: "aggregate_phase2_unexpected_error" };
+        }
+      } finally {
+        // Phase 2 epilogue cleanup (rev 17 board issue #1) — unconditional
+        await runPhase2EpilogueCleanup(workspaceDir).catch((cleanupErr) => {
+          logger.error({ cleanupErr, workspaceDir }, "aggregate_phase2_cleanup_failed");
+          // Do NOT mutate outcome
+        });
+      }
+    }
+
+    // Phase 3: Tx2 bookkeeping with OCC guard
+    const claimMergedAt = now;
+
+    for (const claimed of claimedHandoffs) {
+      await db.transaction(async (tx) => {
+        if (outcome!.kind === "success") {
+          // Get merged SHA
+          let mergedSha = "";
+          try {
+            const shaResult = await execFile("git", ["-C", workspaceDir, "rev-parse", "HEAD"], {
+              timeout: 10_000,
+              killSignal: "SIGTERM",
+            });
+            mergedSha = shaResult.stdout.trim();
+          } catch {
+            mergedSha = "";
+          }
+
+          const updateResult = await tx
+            .update(handoffs)
+            .set({
+              status: "merged",
+              mergedSha: mergedSha || null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(handoffs.id, claimed.id),
+                eq(handoffs.mergedAt, claimMergedAt),
+              ),
+            )
+            .returning();
+
+          if (updateResult.length === 0) {
+            logger.warn({ handoffId: claimed.id }, "aggregate_zombie_abort: OCC guard triggered");
+            return;
+          }
+
+          await tx.insert(activityLog).values({
+            companyId: claimed.companyId,
+            actorType: "system",
+            actorId: "heartbeat_aggregate",
+            action: "handoff_merged",
+            entityType: "handoff",
+            entityId: claimed.id,
+            details: { mergedSha, issueId, branch: claimed.branch },
+          });
+
+        } else if (outcome!.kind === "conflict") {
+          const conflictReason = outcome!.conflictReason ?? "merge_conflict";
+
+          const updateResult = await tx
+            .update(handoffs)
+            .set({
+              status: "rejected",
+              decision: "rejected",
+              decisionReason: conflictReason,
+              mergedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(handoffs.id, claimed.id),
+                eq(handoffs.mergedAt, claimMergedAt),
+              ),
+            )
+            .returning();
+
+          if (updateResult.length === 0) {
+            logger.warn({ handoffId: claimed.id }, "aggregate_zombie_abort: OCC guard triggered");
+            return;
+          }
+
+          // Insert courtesy comment
+          await tx.insert(issueComments).values({
+            companyId: claimed.companyId,
+            issueId: claimed.issueId,
+            authorAgentId: null,
+            authorUserId: null,
+            body: `Handoff merge conflict detected on branch ${claimed.branch}. Reason: ${conflictReason}`,
+            metadata: {
+              kind: "handoff_merge_conflict_reject",
+              handoffId: claimed.id,
+              branch: claimed.branch,
+              conflictReason,
+            },
+          });
+
+          await tx.insert(activityLog).values({
+            companyId: claimed.companyId,
+            actorType: "system",
+            actorId: "heartbeat_aggregate",
+            action: "handoff.merge_conflict_rejected",
+            entityType: "handoff",
+            entityId: claimed.id,
+            details: { conflictReason, branch: claimed.branch },
+          });
+
+          // Wake fromAgentId via issue_commented
+          if (claimed.fromAgentId) {
+            await enqueueWakeup(claimed.fromAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              payload: { issueId, handoffId: claimed.id, conflictReason },
+              requestedByActorType: "system",
+              requestedByActorId: "heartbeat_aggregate",
+              contextSnapshot: { issueId, wakeReason: "issue_commented" },
+            });
+          }
+
+        } else {
+          // transient: revert mergedAt, keep status='accepted'
+          const updateResult = await tx
+            .update(handoffs)
+            .set({
+              mergedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(handoffs.id, claimed.id),
+                eq(handoffs.mergedAt, claimMergedAt),
+              ),
+            )
+            .returning();
+
+          if (updateResult.length === 0) {
+            logger.warn({ handoffId: claimed.id }, "aggregate_zombie_abort: OCC guard triggered on transient");
+          }
+        }
+      });
+    }
+
+    return {
+      outcome: outcome!.kind,
+      reason: outcome!.__reason,
+      conflictReason: outcome!.conflictReason,
+      alreadyApplied: outcome!.alreadyApplied,
+    };
+  }
+}
+
+// Classifier for git cherry-pick output
+function classifyCherryPickResult(exitCode: number, stdout: string, stderr: string): {
+  kind: "success" | "conflict" | "transient";
+  conflictReason?: string;
+  alreadyApplied?: boolean;
+} {
+  if (exitCode === 0) {
+    return { kind: "success" };
+  }
+
+  if (exitCode === 128) {
+    // Check for orphaned SHA (force-push)
+    if (/bad revision|unknown revision|bad object/.test(stderr)) {
+      return { kind: "conflict", conflictReason: "orphaned_sha_force_push" };
+    }
+    return { kind: "transient" };
+  }
+
+  if (exitCode === 1) {
+    // Priority: CONFLICT marker before empty-commit markers
+    if (/^CONFLICT \(/m.test(stdout)) {
+      return { kind: "conflict" };
+    }
+
+    // Empty-commit markers → success with alreadyApplied
+    const emptyMarkers = [
+      "nothing to commit",
+      "the previous cherry-pick is now empty",
+      "is empty\nIf you wish to commit it anyway",
+      "--allow-empty",
+    ];
+    if (emptyMarkers.some((m) => stdout.includes(m) || stderr.includes(m))) {
+      return { kind: "success", alreadyApplied: true };
+    }
+
+    return { kind: "transient" };
+  }
+
+  return { kind: "transient" };
+}
+
+// Cherry-pick runner using execFile (no shell)
+async function runGitCherryPick(
+  workspaceDir: string,
+  baseBranch: string,
+  verifiedSha: string,
+  timeoutMs: number,
+): Promise<{ kind: "success" | "conflict" | "transient"; conflictReason?: string; alreadyApplied?: boolean; __reason?: string }> {
+  try {
+    await execFile(
+      "git",
+      ["-C", workspaceDir, "cherry-pick", "--allow-empty", `${baseBranch}..${verifiedSha}`],
+      { timeout: timeoutMs, killSignal: "SIGTERM" },
+    );
+    return { kind: "success" };
+  } catch (err: unknown) {
+    const errAny = err as { code?: number | string; stdout?: string; stderr?: string; killed?: boolean };
+    const exitCode = typeof errAny.code === "number" ? errAny.code : 1;
+    const stdout = errAny.stdout ?? "";
+    const stderr = errAny.stderr ?? "";
+
+    if (errAny.killed) {
+      return { kind: "transient", __reason: "cherry_pick_sigterm" };
+    }
+
+    return classifyCherryPickResult(exitCode, stdout, stderr);
+  }
+}
+
+// Phase 2 prologue prepurge: clears git lock files before phase2Start
+async function runPhase2Prepurge(workspaceDir: string): Promise<void> {
+  const lockFiles = [
+    path.join(workspaceDir, ".git", "index.lock"),
+    path.join(workspaceDir, ".git", "HEAD.lock"),
+    path.join(workspaceDir, ".git", "CHERRY_PICK_HEAD"),
+    path.join(workspaceDir, ".git", "MERGE_HEAD"),
+    path.join(workspaceDir, ".git", "REVERT_HEAD"),
+    path.join(workspaceDir, ".git", "MERGE_MSG"),
+    path.join(workspaceDir, ".git", "SQUASH_MSG"),
+  ];
+
+  for (const lockFile of lockFiles) {
+    await fs.unlink(lockFile).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return; // Expected: file doesn't exist
+      throw err; // EACCES surfaces
+    });
+  }
+
+  // Sweep .git/refs/**/*.lock
+  const refLocks = await findFilesRecursive(path.join(workspaceDir, ".git", "refs"), ".lock").catch(() => []);
+  for (const lockFile of refLocks) {
+    await fs.unlink(lockFile).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return;
+      throw err;
+    });
+  }
+
+  // Reset and clean workspace
+  await execFile(
+    "git",
+    ["-C", workspaceDir, "reset", "--hard", "HEAD"],
+    { timeout: PHASE2_PREPURGE_TIMEOUT_MS, killSignal: "SIGTERM" },
+  );
+
+  await execFile(
+    "git",
+    ["-C", workspaceDir, "clean", "-fd"],
+    { timeout: PHASE2_PREPURGE_TIMEOUT_MS, killSignal: "SIGTERM" },
+  );
+}
+
+// Phase 2 epilogue cleanup: runs unconditionally in finally block
+async function runPhase2EpilogueCleanup(workspaceDir: string): Promise<void> {
+  // cherry-pick --abort (swallow exit 128 — no pick in progress is steady state)
+  await execFile("git", ["-C", workspaceDir, "cherry-pick", "--abort"], {
+    timeout: 30_000,
+    killSignal: "SIGTERM",
+  }).catch(() => {});
+
+  // reset --hard HEAD (propagate errors to caller for logging)
+  await execFile("git", ["-C", workspaceDir, "reset", "--hard", "HEAD"], {
+    timeout: 30_000,
+    killSignal: "SIGTERM",
+  });
+
+  // clean -fd
+  await execFile("git", ["-C", workspaceDir, "clean", "-fd"], {
+    timeout: 30_000,
+    killSignal: "SIGTERM",
+  });
+}
+
+// Recursive file finder (replaces fast-glob for lock file sweep)
+async function findFilesRecursive(dir: string, suffix: string): Promise<string[]> {
+  const results: string[] = [];
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const sub = await findFilesRecursive(fullPath, suffix);
+      results.push(...sub);
+    } else if (entry.name.endsWith(suffix)) {
+      results.push(fullPath);
+    }
+  }
+  return results;
 }
