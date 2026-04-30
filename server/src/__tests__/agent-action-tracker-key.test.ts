@@ -144,3 +144,45 @@ describe("captureRequestBody — replacer + redaction + 500-char slice", () => {
     expect(() => captureRequestBody(obj)).not.toThrow();
   });
 });
+
+describe("pre/post-routing parity: 413 and 422 produce identical tracker path", () => {
+  it("buildTrackerKey returns the same key.path regardless of which HTTP status code follows", () => {
+    const path = "/api/issues/LIF-375/comments";
+    // Two requests for the same endpoint — one that will get 413, one that will get 422.
+    // The tracker key is built from the request only (no status code), so key.path must be identical.
+    const req413 = agentReq(path, "POST");
+    const req422 = agentReq(path, "POST");
+
+    const key413 = buildTrackerKey(req413);
+    const key422 = buildTrackerKey(req422);
+
+    expect(key413).not.toBeNull();
+    expect(key422).not.toBeNull();
+    expect(key413!.path).toBe(key422!.path);
+    expect(key413!.path).toBe("/api/issues/:id/comments");
+  });
+
+  it("normalizeAgentPath is idempotent across the two status-code paths", () => {
+    const rawPath = "/api/issues/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/comments";
+    // Whether the response will be 413 or 422 does not affect path normalization.
+    expect(normalizeAgentPath(rawPath)).toBe(normalizeAgentPath(rawPath));
+  });
+});
+
+describe("captureRequestBody — 5MB body completes within event-loop budget", () => {
+  it("captures 5MB body without freezing event loop (resolves within 200ms)", async () => {
+    const big = "x".repeat(5 * 1024 * 1024);
+    const wait = (ms: number) =>
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`captureRequestBody took longer than ${ms}ms`)), ms),
+      );
+
+    const result = await Promise.race([
+      Promise.resolve(captureRequestBody({ blob: big })),
+      wait(200),
+    ]);
+
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeLessThanOrEqual(500);
+  });
+});

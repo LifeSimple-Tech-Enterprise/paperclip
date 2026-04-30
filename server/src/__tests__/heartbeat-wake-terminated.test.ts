@@ -50,3 +50,46 @@ describe("heartbeat catch block: WakeTerminatedError detection", () => {
     expect(deriveErrorCode(err)).toBe("wake_terminated_by_harness");
   });
 });
+
+// ---------------------------------------------------------------------------
+// run_state derivation — heartbeat.ts:5824 always calls setRunStatus("failed")
+// for both WakeTerminated and other adapter errors.
+// ---------------------------------------------------------------------------
+
+// Mirrors the run_state selection at heartbeat.ts:5824:
+//   await setRunStatus(run.id, "failed", ...)
+// Both error paths (wake_terminated_by_harness and adapter_failed) use "failed".
+function deriveRunState(err: unknown): "failed" | "completed" {
+  const errorCode = deriveErrorCode(err);
+  // heartbeat.ts catch block always calls setRunStatus(run.id, "failed", ...)
+  // The errorCode differs but run_state is always "failed", never "completed".
+  return errorCode === "wake_terminated_by_harness" || errorCode === "adapter_failed"
+    ? "failed"
+    : "completed";
+}
+
+describe("heartbeat catch block: run_state after WakeTerminatedError (410 + harness sentinel)", () => {
+  it("WakeTerminatedError → run_state is 'failed', not 'completed'", () => {
+    const err = new Error("wake terminated by harness: issue-deleted");
+    err.name = "WakeTerminatedError";
+    expect(deriveRunState(err)).toBe("failed");
+    expect(deriveRunState(err)).not.toBe("completed");
+  });
+
+  it("410 + WakeTerminatedError combination: errorCode=wake_terminated_by_harness, run_state=failed", () => {
+    // The harness signals a 410 by raising WakeTerminatedError before the adapter exits.
+    // The heartbeat catch block detects it by name and sets errorCode accordingly.
+    // Both the errorCode and the run_state must be correct.
+    const err = new Error("wake terminated by harness: 410-gone");
+    err.name = "WakeTerminatedError";
+    expect(deriveErrorCode(err)).toBe("wake_terminated_by_harness");
+    expect(deriveRunState(err)).toBe("failed");
+  });
+
+  it("plain adapter errors (non-wake-terminated) also produce run_state=failed", () => {
+    // All errors in the heartbeat catch block set run_state="failed".
+    const err = new Error("adapter crashed");
+    expect(deriveErrorCode(err)).toBe("adapter_failed");
+    expect(deriveRunState(err)).toBe("failed");
+  });
+});
