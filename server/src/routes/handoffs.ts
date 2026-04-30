@@ -10,7 +10,7 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
-import { forbidden, unprocessable } from "../errors.js";
+import { descriptiveError, forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logActivity } from "../services/index.js";
@@ -24,7 +24,11 @@ const GIT_REF_SAFE_RE = /^[\w\-.\/]+$/;
 
 export async function assertValidGitRef(ref: string, workspaceDir: string): Promise<void> {
   if (!GIT_REF_SAFE_RE.test(ref)) {
-    throw unprocessable("invalid_git_ref", { ref });
+    throw descriptiveError(
+      "INVALID_GIT_REF",
+      `git ref \`${ref}\` is not a valid branch/ref name; pass a real branch like 'main' or 'feature/my-branch'`,
+      { ref },
+    );
   }
   try {
     await execFile("git", ["check-ref-format", "--branch", ref], {
@@ -40,7 +44,11 @@ export async function assertValidGitRef(ref: string, workspaceDir: string): Prom
         killSignal: "SIGTERM",
       });
     } catch {
-      throw unprocessable("invalid_git_ref", { ref });
+      throw descriptiveError(
+      "INVALID_GIT_REF",
+      `git ref \`${ref}\` is not a valid branch/ref name; pass a real branch like 'main' or 'feature/my-branch'`,
+      { ref },
+    );
     }
   }
 }
@@ -105,7 +113,11 @@ async function runScopeCheck(
       (serverErr as unknown as Record<string, unknown>).status = 500;
       throw serverErr;
     }
-    throw unprocessable("transient_branch_missing", { branch });
+    throw descriptiveError(
+      "TRANSIENT_BRANCH_MISSING",
+      `branch \`${branch}\` could not be fetched from origin; push the branch then retry`,
+      { branch },
+    );
   }
 
   // Step 3: Diff to find changed files
@@ -118,7 +130,11 @@ async function runScopeCheck(
     );
     diffOutput = result.stdout;
   } catch {
-    throw unprocessable("transient_branch_missing", { branch });
+    throw descriptiveError(
+      "TRANSIENT_BRANCH_MISSING",
+      `branch \`${branch}\` could not be fetched from origin; push the branch then retry`,
+      { branch },
+    );
   }
 
   const changedFiles = diffOutput.split("\n").filter((f) => f.trim().length > 0);
@@ -138,7 +154,11 @@ async function runScopeCheck(
     );
     verifiedSha = shaResult.stdout.trim();
   } catch {
-    throw unprocessable("transient_sha_resolve_failed", { branch });
+    throw descriptiveError(
+      "TRANSIENT_SHA_RESOLVE_FAILED",
+      `failed to resolve HEAD sha for branch \`${branch}\` after fetch; the ref may have moved mid-check, retry once`,
+      { branch },
+    );
   }
 
   if (outOfScopeFiles.length > 0) {
@@ -274,13 +294,19 @@ export function handoffRoutes(db: Db) {
     };
 
     if (!kind || !["delegate", "review", "acceptance"].includes(kind)) {
-      res.status(422).json({ error: "invalid_kind", message: "kind must be delegate, review, or acceptance" });
-      return;
+      throw descriptiveError(
+        "INVALID_KIND",
+        "Handoff `kind` must be one of: 'delegate' (Lead→Drafter), 'review' (Drafter→Critique), 'acceptance' (final). Pass `kind` in the JSON body.",
+        { kind, allowed: ["delegate", "review", "acceptance"] },
+      );
     }
 
     if (kind === "delegate" && !branch) {
-      res.status(422).json({ error: "missing_branch", message: "delegate handoff requires branch" });
-      return;
+      throw descriptiveError(
+        "MISSING_BRANCH",
+        "delegate handoffs require a `branch` field naming the working branch the Drafter pushes to (e.g. 'agent/<id>')",
+        { kind },
+      );
     }
 
     // Idempotency check
@@ -311,8 +337,11 @@ export function handoffRoutes(db: Db) {
     if (kind === "review") {
       // Hard-inheritance: clone branch, baseBranch, scopeGlobs from parent delegate
       if (!parentHandoffId) {
-        res.status(422).json({ error: "orphan_review", message: "review handoff requires parentHandoffId" });
-        return;
+        throw descriptiveError(
+          "ORPHAN_REVIEW",
+          "review handoffs must reference the parent delegate handoff via `parentHandoffId`; reviews never originate without a delegate",
+          { kind: "review" },
+        );
       }
 
       const parent = await db
@@ -323,20 +352,29 @@ export function handoffRoutes(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!parent) {
-        res.status(422).json({ error: "orphan_review", message: "parent handoff not found" });
-        return;
+        throw descriptiveError(
+          "ORPHAN_REVIEW",
+          `parentHandoffId \`${parentHandoffId}\` does not exist; review handoffs must reference an existing delegate`,
+          { parentHandoffId },
+        );
       }
 
       // Cross-company check
       if (parent.companyId !== issue.companyId) {
-        res.status(422).json({ error: "orphan_review", message: "parent handoff belongs to a different company" });
-        return;
+        throw descriptiveError(
+          "ORPHAN_REVIEW",
+          "parentHandoffId belongs to a different company; review and parent must share the same company",
+          { parentHandoffId, parentCompanyId: parent.companyId, issueCompanyId: issue.companyId },
+        );
       }
 
       // Parent must be a delegate
       if (parent.kind !== "delegate") {
-        res.status(422).json({ error: "orphan_review", message: "parent handoff must be kind=delegate" });
-        return;
+        throw descriptiveError(
+          "ORPHAN_REVIEW",
+          `parent handoff has kind='${parent.kind}'; reviews must reference a kind='delegate' handoff`,
+          { parentHandoffId, parentKind: parent.kind },
+        );
       }
 
       // Authz: authenticated agent must be parent's toAgentId
@@ -412,8 +450,11 @@ export function handoffRoutes(db: Db) {
     };
 
     if (!decision || !["accepted", "rejected"].includes(decision)) {
-      res.status(422).json({ error: "invalid_decision", message: "decision must be accepted or rejected" });
-      return;
+      throw descriptiveError(
+        "INVALID_DECISION",
+        "PATCH /handoffs/:id/decide requires `decision` to be 'accepted' or 'rejected' in the JSON body",
+        { decision, allowed: ["accepted", "rejected"] },
+      );
     }
 
     // Idempotent replay keyed on decision (rev 13)
@@ -423,8 +464,11 @@ export function handoffRoutes(db: Db) {
         res.status(200).json({ handoff, idempotent: true });
         return;
       }
-      res.status(422).json({ error: "terminal_handoff_mismatch", message: "handoff is already in a terminal state with a different decision" });
-      return;
+      throw descriptiveError(
+        "TERMINAL_HANDOFF_MISMATCH",
+        `handoff is already in terminal status '${handoff.status}' with decision '${handoff.decision}'; create a new handoff instead of decoding ${decision} on this one`,
+        { handoffId: id, currentStatus: handoff.status, currentDecision: handoff.decision, requestedDecision: decision },
+      );
     }
 
     // Base resolution
@@ -435,8 +479,11 @@ export function handoffRoutes(db: Db) {
       resolvedBase = wsInfo?.baseRef ?? null;
     }
     if (!resolvedBase) {
-      res.status(422).json({ error: "unresolved_base", message: "cannot resolve base branch" });
-      return;
+      throw descriptiveError(
+        "UNRESOLVED_BASE",
+        "cannot resolve a base branch for this handoff; set `baseBranch` on the handoff or set `baseRef` on the issue's executionWorkspace",
+        { handoffId: id, issueId: handoff.issueId },
+      );
     }
 
     if (decision === "rejected") {
@@ -472,8 +519,11 @@ export function handoffRoutes(db: Db) {
     // decision === "accepted" — run scope-coupling check
     const wsInfo = await resolveWorkspaceDir(db, handoff.issueId);
     if (!wsInfo) {
-      res.status(422).json({ error: "unresolved_base", message: "no execution workspace found for issue" });
-      return;
+      throw descriptiveError(
+        "UNRESOLVED_BASE",
+        "no executionWorkspace is attached to this issue; the scope-coupling check requires a real working tree",
+        { handoffId: id, issueId: handoff.issueId },
+      );
     }
     const { workspaceDir } = wsInfo;
 
@@ -499,8 +549,11 @@ export function handoffRoutes(db: Db) {
 
     const branch = handoff.branch;
     if (!branch) {
-      res.status(422).json({ error: "unresolved_base", message: "handoff has no branch" });
-      return;
+      throw descriptiveError(
+        "UNRESOLVED_BASE",
+        "handoff has no `branch` recorded; reviews/decisions need a branch to scope-check against",
+        { handoffId: id },
+      );
     }
 
     let scopeResult: Awaited<ReturnType<typeof runScopeCheck>>;

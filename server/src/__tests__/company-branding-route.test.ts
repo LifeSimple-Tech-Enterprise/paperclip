@@ -200,8 +200,10 @@ describe("PATCH /api/companies/:companyId/branding", () => {
         status: "archived",
       });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Validation error");
+    // LIF-375 Stage 3a: ZodError → 422 with VALIDATION_ERROR code + flat issue list.
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("VALIDATION_ERROR");
+    expect(res.body.error).toBe("Validation failed");
     expect(mockCompanyService.update).not.toHaveBeenCalled();
   });
 });

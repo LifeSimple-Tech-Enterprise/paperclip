@@ -159,6 +159,7 @@ describe.sequential("auth routes", () => {
       .patch("/api/auth/profile")
       .send({ name: "Jane Example", image: "not-a-url" });
 
-    expect(res.status).toBe(400);
+    // LIF-375 Stage 3a: ZodError → 422 universally with VALIDATION_ERROR code.
+    expect(res.status).toBe(422);
   });
 });

@@ -315,9 +315,11 @@ describe("company skill mutation permissions", () => {
       .delete("/api/companies/company-1/skills/skill-1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(res.body).toEqual({
-      error: 'Cannot delete skill "Find Skills" while it is still used by Builder, Reviewer. Detach it from those agents first.',
-    });
+    // LIF-375 Stage 3a: uncoded HttpError(422) → preserves error + tags
+    // UNKNOWN_VALIDATION_ERROR with guidance/originalMessage in details.
+    expect(res.body.error).toBe('Cannot delete skill "Find Skills" while it is still used by Builder, Reviewer. Detach it from those agents first.');
+    expect(res.body.code).toBe("UNKNOWN_VALIDATION_ERROR");
+    expect(res.body.details.originalMessage).toBe(res.body.error);
     expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1");
     expect(mockLogActivity).not.toHaveBeenCalled();
   });

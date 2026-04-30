@@ -56,7 +56,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
+import { conflict, descriptiveError, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -2046,8 +2046,11 @@ export function issueRoutes(
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
         if (reviewRequest !== null) {
-          res.status(422).json({ error: "reviewRequest requires an active review or approval stage" });
-          return;
+          throw descriptiveError(
+            "REVIEW_REQUEST_NOT_ACTIVE",
+            "PATCH `reviewRequest` requires the issue to be in an active review or approval stage; check the issue's executionState before sending a review/approval decision",
+            { issueId: existing.id, executionStateStatus: parseIssueExecutionState(existing.executionState)?.status ?? null },
+          );
         }
       } else {
         updateFields.executionState = {

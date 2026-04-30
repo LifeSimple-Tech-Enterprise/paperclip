@@ -357,7 +357,7 @@ describeEmbeddedPostgres("handoffs routes (embedded postgres)", () => {
         .send({ kind: "delegate", toAgentId });
 
       expect(res.status).toBe(422);
-      expect(res.body.error).toBe("missing_branch");
+      expect(res.body.code).toBe("MISSING_BRANCH");
     });
 
     it("rejects invalid kind → 422", async () => {
@@ -369,7 +369,7 @@ describeEmbeddedPostgres("handoffs routes (embedded postgres)", () => {
         .send({ kind: "bogus_kind", branch: "main" });
 
       expect(res.status).toBe(422);
-      expect(res.body.error).toBe("invalid_kind");
+      expect(res.body.code).toBe("INVALID_KIND");
     });
 
     it("returns 404 for unknown issue", async () => {
@@ -576,7 +576,7 @@ describeEmbeddedPostgres("handoffs routes (embedded postgres)", () => {
         .send({ kind: "review", parentHandoffId: otherDelegate.id });
 
       expect(res.status).toBe(422);
-      expect(res.body.error).toBe("orphan_review");
+      expect(res.body.code).toBe("ORPHAN_REVIEW");
     });
 
     it("non-delegate parent → 422 orphan_review", async () => {
@@ -600,7 +600,7 @@ describeEmbeddedPostgres("handoffs routes (embedded postgres)", () => {
         .send({ kind: "review", parentHandoffId: acceptance.id });
 
       expect(res.status).toBe(422);
-      expect(res.body.error).toBe("orphan_review");
+      expect(res.body.code).toBe("ORPHAN_REVIEW");
     });
   });
 
@@ -654,7 +654,7 @@ describeEmbeddedPostgres("handoffs routes (embedded postgres)", () => {
         .send({ decision: "accepted" });
 
       expect(res.status).toBe(422);
-      expect(res.body.error).toBe("terminal_handoff_mismatch");
+      expect(res.body.code).toBe("TERMINAL_HANDOFF_MISMATCH");
     });
 
     it("decisionReason ignored on replay: persisted decisionReason is canonical, body decisionReason NOT overwritten", async () => {
@@ -849,7 +849,7 @@ describeEmbeddedPostgres("handoffs routes (embedded postgres)", () => {
         .send({ decision: "accepted" });
 
       expect(res.status).toBe(422);
-      expect(res.body.error).toBe("transient_branch_missing");
+      expect(res.body.code).toBe("TRANSIENT_BRANCH_MISSING");
     });
 
     it("sha resolve failure → 422 transient_sha_resolve_failed", async () => {
@@ -873,7 +873,7 @@ describeEmbeddedPostgres("handoffs routes (embedded postgres)", () => {
         .send({ decision: "accepted" });
 
       expect(res.status).toBe(422);
-      expect(res.body.error).toBe("transient_sha_resolve_failed");
+      expect(res.body.code).toBe("TRANSIENT_SHA_RESOLVE_FAILED");
     });
   });
 

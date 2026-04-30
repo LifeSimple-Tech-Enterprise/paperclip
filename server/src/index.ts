@@ -790,6 +790,17 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
+  // LIF-375 Stage 3a: 24h sweep of agent_action_attempts. Crash-resilient because
+  // the table is UNLOGGED — sweeper just resumes on the next interval.
+  const AGENT_ACTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  const { sweepStaleAgentActionAttempts } = await import("./middleware/agent-action-tracker.js");
+  const agentActionSweepTimer = setInterval(() => {
+    void sweepStaleAgentActionAttempts(db).catch((err) => {
+      logger.error({ err }, "agent_action_attempts sweep failed");
+    });
+  }, AGENT_ACTION_SWEEP_INTERVAL_MS);
+  agentActionSweepTimer.unref?.();
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 

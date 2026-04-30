@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { agentActionTrackerMiddleware } from "./middleware/agent-action-tracker.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
@@ -139,13 +140,6 @@ export async function createApp(
 ) {
   const app = express();
 
-  app.use(express.json({
-    // Company import/export payloads can inline full portable packages.
-    limit: "10mb",
-    verify: (req, _res, buf) => {
-      (req as unknown as { rawBody: Buffer }).rawBody = buf;
-    },
-  }));
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -162,12 +156,38 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  // LIF-375 Stage 3a: actor resolution must run BEFORE the body parser so the
+  // dynamic limit below can read `req.actor.type`. The actor middleware uses
+  // headers + database lookups only — it never reads `req.body` — so it is safe
+  // to run before parsing.
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
       resolveSession: opts.resolveSession,
     }),
   );
+
+  // LIF-375 Stage 3a: dynamic body-parser limit by actor type.
+  //   - agent  → 10kb (cheap to reject loops; agents post small payloads)
+  //   - other  → 10mb (board users importing/exporting full portable packages)
+  // The `verify` hook is preserved because rawBody is load-bearing for HMAC
+  // verification on plugin/webhook routes.
+  const verifyRawBody = (req: unknown, _res: unknown, buf: Buffer) => {
+    (req as { rawBody: Buffer }).rawBody = buf;
+  };
+  const agentJsonParser = express.json({ limit: "10kb", verify: verifyRawBody });
+  const userJsonParser = express.json({ limit: "10mb", verify: verifyRawBody });
+  app.use((req, res, next) => {
+    if (req.actor?.type === "agent") {
+      agentJsonParser(req, res, next);
+    } else {
+      userJsonParser(req, res, next);
+    }
+  });
+
+  // LIF-375 Stage 3a: agent_action_attempts tracker. Mounts after body parser
+  // so it can capture `req.body`. No-op for non-agent actors.
+  app.use(agentActionTrackerMiddleware(db));
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
