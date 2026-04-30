@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { writeRolePackTmpFile } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
@@ -337,11 +338,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
-  // When instructionsFilePath is configured, build a stable content-addressed
-  // file that includes both the file content and the path directive, so we only
-  // need --append-system-prompt-file (Claude CLI forbids using both flags together).
+  // When instructionsContents is configured (server-rendered role pack), write to a per-run tmp
+  // file and use that path for --append-system-prompt-file. This takes precedence over
+  // instructionsFilePath. The legacy instructionsFilePath path is unchanged when absent.
+  const instructionsContentsFromConfig = asString(config.instructionsContents, "").trim();
   let combinedInstructionsContents: string | null = null;
-  if (instructionsFilePath) {
+  let rolePackTmpFilePath: string | null = null;
+  if (instructionsContentsFromConfig) {
+    combinedInstructionsContents = instructionsContentsFromConfig;
+    try {
+      rolePackTmpFilePath = await writeRolePackTmpFile({ runId, agentId: agent.id, contents: instructionsContentsFromConfig });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not write role pack tmp file: ${reason}\n`,
+      );
+    }
+  } else if (instructionsFilePath) {
+    // When instructionsFilePath is configured, build a stable content-addressed
+    // file that includes both the file content and the path directive, so we only
+    // need --append-system-prompt-file (Claude CLI forbids using both flags together).
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
       const pathDirective =
@@ -364,7 +381,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
-  const effectiveInstructionsFilePath = promptBundle.instructionsFilePath ?? undefined;
+  // Role pack tmp file takes precedence over the bundle's content-addressed file.
+  const effectiveInstructionsFilePath = rolePackTmpFilePath ?? promptBundle.instructionsFilePath ?? undefined;
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");

@@ -66,6 +66,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
+import { resolveRolePack, renderRolePack } from "./role-packs.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -3409,10 +3410,18 @@ export function heartbeatService(db: Db) {
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
-    const runtimeConfig = {
+    const rolePackId = resolveRolePack(agent);
+    const runtimeConfig: Record<string, unknown> = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    if (rolePackId !== null) {
+      runtimeConfig.instructionsContents = renderRolePack(rolePackId, {
+        agentId: agent.id,
+        agentName: agent.name,
+        companyId: agent.companyId,
+      });
+    }
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
@@ -4115,9 +4124,11 @@ export function heartbeatService(db: Db) {
         }
       }
 
+      const isWakeTerminated = err instanceof Error && err.name === "WakeTerminatedError";
+      const errorCode = isWakeTerminated ? "wake_terminated_by_harness" : "adapter_failed";
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode,
         finishedAt: new Date(),
         stdoutExcerpt,
         stderrExcerpt,

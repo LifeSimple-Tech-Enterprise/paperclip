@@ -54,3 +54,14 @@ export {
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export { WakeTerminatedError } from "./errors.js";
+export {
+  wrapFetchForWakeTermination,
+  isWakeTerminatedSentinel,
+  type WakeTerminatedSentinel,
+} from "./wake-terminated-fetch.js";
+export {
+  writeRolePackTmpFile,
+  sweepRolePackTmpFiles,
+  startRolePackSweepInterval,
+} from "./role-pack-tmpfile.js";

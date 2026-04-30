@@ -260,16 +260,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // Handle instructions file and build system prompt extension
+  // Handle instructions and build system prompt extension.
+  // instructionsContents (server-rendered role pack) takes precedence over instructionsFilePath.
+  const instructionsContentsFromConfig = asString(config.instructionsContents, "").trim();
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const resolvedInstructionsFilePath = instructionsFilePath
     ? path.resolve(cwd, instructionsFilePath)
     : "";
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  
+
   let systemPromptExtension = "";
   let instructionsReadFailed = false;
-  if (resolvedInstructionsFilePath) {
+  if (instructionsContentsFromConfig) {
+    systemPromptExtension = `${instructionsContentsFromConfig}\n\n${promptTemplate}`;
+  } else if (resolvedInstructionsFilePath) {
     try {
       const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
       systemPromptExtension =

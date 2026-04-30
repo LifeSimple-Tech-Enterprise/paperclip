@@ -21,6 +21,9 @@ export {
   claudeConfigDir,
 } from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import { startRolePackSweepInterval } from "@paperclipai/adapter-utils";
+
+startRolePackSweepInterval();
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
