@@ -1,6 +1,6 @@
-import { and, eq, gte, isNotNull, isNull, lte, sql, desc } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, isNull, lte, sql, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests } from "@paperclipai/db";
 
 const DEFAULT_WINDOW_DAYS = 7;
 
@@ -33,6 +33,12 @@ export interface DeclaredTransitionRow {
   count: number;
 }
 
+export interface HandoffScopeRejectionRow {
+  /** ISO date key (YYYY-MM-DD) bucket */
+  date: string;
+  count: number;
+}
+
 export interface WakeEventsBaseline {
   windowStart: string;
   windowEnd: string;
@@ -44,6 +50,8 @@ export interface WakeEventsBaseline {
   byReasonAndTransition: ByReasonAndTransitionRow[];
   suppressed: SuppressedRow[];
   ctxFieldUsage: CtxFieldUsageRow[];
+  /** Stage 2 (LIF-374) AC #2: handoff.auto_rejected events bucketed by UTC day. */
+  handoffScopeRejections: HandoffScopeRejectionRow[];
 }
 
 export function wakeEventsBaselineService(db: Db) {
@@ -130,6 +138,25 @@ export function wakeEventsBaselineService(db: Db) {
         .groupBy(agentWakeupRequests.declaredTransition)
         .orderBy(desc(sql<number>`count(*)`));
 
+      // Stage 2 (LIF-374) AC #2: handoff.auto_rejected events bucketed by UTC day.
+      const rejectionDayExpr = sql<string>`to_char(${activityLog.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
+      const rejectionRows = await db
+        .select({
+          date: rejectionDayExpr,
+          count: sql<number>`count(*)`,
+        })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.action, "handoff.auto_rejected"),
+            gte(activityLog.createdAt, since),
+            lte(activityLog.createdAt, until),
+          ),
+        )
+        .groupBy(rejectionDayExpr)
+        .orderBy(asc(rejectionDayExpr));
+
       return {
         windowStart: since.toISOString(),
         windowEnd: until.toISOString(),
@@ -153,6 +180,10 @@ export function wakeEventsBaselineService(db: Db) {
         })),
         ctxFieldUsage: ctxUsageRows.map((row) => ({
           ctxFieldUsed: row.ctxFieldUsed ?? null,
+          count: Number(row.count),
+        })),
+        handoffScopeRejections: rejectionRows.map((row) => ({
+          date: row.date,
           count: Number(row.count),
         })),
       };
