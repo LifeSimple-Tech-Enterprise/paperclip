@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
-import { resolveReferenceDocsRoot } from "../paths.js";
+import { REFERENCE_DOCS_ROOT } from "../paths.js";
 
 vi.mock("../middleware/logger.js", () => ({
   logger: { warn: vi.fn() },
@@ -93,15 +93,13 @@ describe("renderRolePack", () => {
     }
   });
 
-  it("stuck-case path uses resolveReferenceDocsRoot() (leaf paths.ts), not a hard-coded string", () => {
+  it("stuck-case path uses REFERENCE_DOCS_ROOT (leaf paths.ts), not a hard-coded string", () => {
     const rendered = renderRolePack("lead", ctx);
-    const expectedRoot = resolveReferenceDocsRoot();
-    expect(rendered).toContain(`${expectedRoot}/lead/AGENTS.md`);
+    expect(rendered).toContain(`${REFERENCE_DOCS_ROOT}/lead/AGENTS.md`);
   });
 
-  it("resolveReferenceDocsRoot ends with server/docs/reference", () => {
-    const root = resolveReferenceDocsRoot();
-    expect(root.replace(/\\/g, "/")).toMatch(/server\/docs\/reference$/);
+  it("REFERENCE_DOCS_ROOT ends with server/docs/reference", () => {
+    expect(REFERENCE_DOCS_ROOT.replace(/\\/g, "/")).toMatch(/server\/docs\/reference$/);
   });
 });
 

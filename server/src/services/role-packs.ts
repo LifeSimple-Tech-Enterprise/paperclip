@@ -1,5 +1,5 @@
 import { logger } from "../middleware/logger.js";
-import { resolveReferenceDocsRoot } from "../paths.js";
+import { REFERENCE_DOCS_ROOT } from "../paths.js";
 
 export type RoleId = "lead" | "drafter" | "critique";
 
@@ -103,7 +103,7 @@ export function renderRolePack(
 ): string {
   const template = ROLE_PACK_TEMPLATES[roleId];
   return template
-    .replaceAll("{{REFERENCE_DOCS_ROOT}}", resolveReferenceDocsRoot())
+    .replaceAll("{{REFERENCE_DOCS_ROOT}}", REFERENCE_DOCS_ROOT)
     .replaceAll("{{AGENT_ID}}", agentContext.agentId)
     .replaceAll("{{AGENT_NAME}}", agentContext.agentName)
     .replaceAll("{{COMPANY_ID}}", agentContext.companyId);

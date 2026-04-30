@@ -1,7 +1,7 @@
 # Local-board scope, infra-error hook & UNLOGGED crash semantics
 
 > Internal reference. Maintained by the Lead Engineer pack. Last updated under
-> LIF-427 (LIF-375 Stage 3a, plan rev 26).
+> LIF-430 (LIF-375 Stage 3d, plan rev 26).
 
 This document describes three load-bearing properties of the server that are
 easy to break by accident:
@@ -32,6 +32,11 @@ This actor:
 - Is **not subject to** the agent self-wake guard (because it is not an agent).
 - Is **not subject to** the per-agent dynamic body-size limit (it parses up to
   10 MB instead of 10 KB).
+- Can call routes that are gated to "instance admin" or "CEO" actors.
+  In practice this is the only path that lets an operator PATCH agent
+  permissions, force-clear a stale `checkoutRunId`, or rewrite the
+  `rolePack` slot on an existing agent. Treat any *new* call site that relies
+  on this implicit grant as a red flag — prefer an explicit operator session.
 
 ### Invariants the platform relies on
 
@@ -123,10 +128,12 @@ after a crash (or any other unclean shutdown). Concretely:
 
 The tracker is a **recovery hint**, not a system of record. Losing it means:
 
+- Agents resume from `attempt_count = 0` after a crash. This is intentional
+  ephemeral state: a crash that unfairly preserved a stale attempt count
+  would block a recovering agent on the first retry after restart. Fresh
+  state is the safer default.
 - Agents that were on attempt N at crash time get one fresh chance before the
-  hook re-engages. That is **better** than the alternative: a crash that
-  unfairly preserved a stale attempt count would block a recovering agent on
-  the first retry after restart.
+  hook re-engages.
 - The audit trail (`activity_log.issue.blocked.bypass`) is preserved on the
   logged side, so post-mortem analysis still has the full record of every
   bypass that fired before the crash.
@@ -161,8 +168,10 @@ When working in this area:
 ## 5. Cross-references
 
 - Plan: LIF-375 rev 26 (issue `b081db57-…`).
-- Implementation: LIF-427 (this stage).
+- Implementation: LIF-427 (Stage 3a, descriptive 422 + tracker), LIF-430
+  (Stage 3d, reference-docs reorg + this runbook).
 - AST follow-up for the architecture test: LIF-371 backlog.
 - Bypass service: `server/src/services/issue-blocked-bypass.ts`.
 - Tracker middleware: `server/src/middleware/agent-action-tracker.ts`.
 - Migration: `packages/db/src/migrations/0075_agent_action_attempts.sql`.
+- Reference-docs root: `server/src/paths.ts` (`REFERENCE_DOCS_ROOT`).

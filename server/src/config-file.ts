@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { paperclipConfigSchema, type PaperclipConfig } from "@paperclipai/shared";
-import { resolvePaperclipConfigPath } from "./paths.js";
+import { resolvePaperclipConfigPath } from "./config-paths.js";
 
 export function readConfigFile(): PaperclipConfig | null {
   const configPath = resolvePaperclipConfigPath();
