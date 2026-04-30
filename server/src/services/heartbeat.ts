@@ -5489,6 +5489,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         claimRow: run,
         issueId: issueId ?? null,
       });
+      // LIF-423: Aggregate-PR merge wake-handler hook (Stage 2 follow-up).
+      // Before dispatching to the adapter, scan for accepted, unmerged review handoffs on
+      // this issue and run runHandoffAggregateMerge first so the agent wakes up to an
+      // already-merged workspace. Gate on (issue assignee == agent) so only the chain's
+      // root agent (Lead) drives the merge — Drafter/Critique wakes on the same issue
+      // would otherwise run cherry-picks against the wrong worktree.
+      // The function itself is idempotent: returns "skipped" when no eligible rows exist.
+      if (
+        issueId &&
+        issueContext &&
+        issueContext.assigneeAgentId === agent.id &&
+        readNonEmptyString(executionWorkspace.cwd)
+      ) {
+        const aggregateOutcome = await tryRunPreAdapterAggregateMerge({
+          issueId,
+          agentId: agent.id,
+          workspaceDir: executionWorkspace.cwd,
+        });
+        if (aggregateOutcome.outcome !== "gated" && aggregateOutcome.outcome !== "skipped") {
+          await appendRunEvent(currentRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: aggregateOutcome.outcome === "success" ? "info" : "warn",
+            message: `aggregate_merge_pre_adapter:${aggregateOutcome.outcome}`,
+            payload: {
+              issueId,
+              outcome: aggregateOutcome.outcome,
+              reason: aggregateOutcome.reason ?? null,
+            } as Record<string, unknown>,
+          });
+        }
+      }
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -7714,7 +7746,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     runHandoffAggregateMerge,
+
+    tryRunPreAdapterAggregateMerge,
   };
+
+  // LIF-423 Stage 2 follow-up: Wake-handler invocation point for runHandoffAggregateMerge.
+  // Gates on (agent is issue assignee) so only the delegation chain's root agent runs the
+  // merge. Returns "gated" when the gate denies, otherwise delegates to runHandoffAggregateMerge.
+  // Errors are caught and reported as outcome="transient" so a merge failure never blocks
+  // adapter dispatch — the agent can still observe the row state and re-attempt next wake.
+  async function tryRunPreAdapterAggregateMerge(opts: {
+    issueId: string;
+    agentId: string;
+    workspaceDir: string;
+    now?: Date;
+  }): Promise<{
+    outcome: "success" | "conflict" | "transient" | "skipped" | "gated";
+    reason?: string;
+  }> {
+    const { issueId, agentId, workspaceDir } = opts;
+
+    const [issueRow] = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .limit(1);
+    if (!issueRow) {
+      return { outcome: "gated", reason: "issue_not_found" };
+    }
+    if (issueRow.assigneeAgentId !== agentId) {
+      return { outcome: "gated", reason: "not_issue_assignee" };
+    }
+
+    try {
+      const result = await runHandoffAggregateMerge({
+        issueId,
+        workspaceDir,
+        fromAgentId: agentId,
+        now: opts.now,
+      });
+      return {
+        outcome: result.outcome,
+        reason: result.reason,
+      };
+    } catch (err) {
+      logger.error(
+        { err, issueId, agentId, workspaceDir },
+        "tryRunPreAdapterAggregateMerge failed",
+      );
+      return {
+        outcome: "transient",
+        reason: err instanceof Error ? err.message : "unknown_error",
+      };
+    }
+  }
 
   // LIF-374 Stage 2: Aggregate-PR rewriter (3-phase pattern)
   // Processes ALL un-merged accepted review handoffs for an issue, ASC by decidedAt.

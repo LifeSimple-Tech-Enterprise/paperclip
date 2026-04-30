@@ -859,4 +859,149 @@ describeEmbeddedPostgres("aggregateHandoffsMerge (via heartbeatService)", () => 
       expect(fetchIdx).toBeLessThan(cherryPickIdx);
     });
   });
+
+  // ===========================================================================
+  // LIF-423: tryRunPreAdapterAggregateMerge — wake-handler invocation point
+  // ===========================================================================
+  describe("tryRunPreAdapterAggregateMerge (LIF-423 wake-handler hook)", () => {
+    it("happy path: assignee + accepted handoff → outcome=success, handoff merged", async () => {
+      const { companyId, agentId, issueId, workspaceDir } = await seedBaseData(db);
+      mockGitAllSuccess("hook-merged-sha");
+
+      const handoffId = await insertAcceptedReview(db, {
+        companyId,
+        agentId,
+        issueId,
+      });
+
+      const { heartbeatService } = await import("../services/heartbeat.ts");
+      const svc = heartbeatService(db as any);
+      const result = await svc.tryRunPreAdapterAggregateMerge({
+        issueId,
+        agentId,
+        workspaceDir,
+      });
+
+      expect(result.outcome).toBe("success");
+
+      const [row] = await db
+        .select({ status: handoffs.status, mergedSha: handoffs.mergedSha })
+        .from(handoffs)
+        .where(eq(handoffs.id, handoffId));
+      expect(row.status).toBe("merged");
+      expect(row.mergedSha).toBe("hook-merged-sha");
+    });
+
+    it("idempotent re-invocation: second call after merge returns skipped (no-op)", async () => {
+      const { companyId, agentId, issueId, workspaceDir } = await seedBaseData(db);
+      mockGitAllSuccess("idempotent-sha");
+
+      const handoffId = await insertAcceptedReview(db, {
+        companyId,
+        agentId,
+        issueId,
+      });
+
+      const { heartbeatService } = await import("../services/heartbeat.ts");
+      const svc = heartbeatService(db as any);
+
+      const first = await svc.tryRunPreAdapterAggregateMerge({
+        issueId,
+        agentId,
+        workspaceDir,
+      });
+      expect(first.outcome).toBe("success");
+
+      const second = await svc.tryRunPreAdapterAggregateMerge({
+        issueId,
+        agentId,
+        workspaceDir,
+      });
+      expect(second.outcome).toBe("skipped");
+
+      // Handoff row state untouched after second call: status=merged, same mergedSha
+      const [row] = await db
+        .select({ status: handoffs.status, mergedSha: handoffs.mergedSha })
+        .from(handoffs)
+        .where(eq(handoffs.id, handoffId));
+      expect(row.status).toBe("merged");
+      expect(row.mergedSha).toBe("idempotent-sha");
+    });
+
+    it("gate: agent is not issue assignee → outcome=gated (no merge attempted)", async () => {
+      const { companyId, agentId, issueId, workspaceDir } = await seedBaseData(db);
+      mockGitAllSuccess();
+
+      const otherAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: otherAgentId,
+        companyId,
+        name: "Other Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const handoffId = await insertAcceptedReview(db, {
+        companyId,
+        agentId,
+        issueId,
+      });
+
+      const { heartbeatService } = await import("../services/heartbeat.ts");
+      const svc = heartbeatService(db as any);
+      const result = await svc.tryRunPreAdapterAggregateMerge({
+        issueId,
+        agentId: otherAgentId,
+        workspaceDir,
+      });
+
+      expect(result.outcome).toBe("gated");
+      expect(result.reason).toBe("not_issue_assignee");
+
+      // No git calls and handoff still pending
+      expect(mockExecFile).not.toHaveBeenCalled();
+      const [row] = await db
+        .select({ status: handoffs.status, mergedAt: handoffs.mergedAt })
+        .from(handoffs)
+        .where(eq(handoffs.id, handoffId));
+      expect(row.status).toBe("accepted");
+      expect(row.mergedAt).toBeNull();
+    });
+
+    it("gate: issue not found → outcome=gated", async () => {
+      const { workspaceDir, agentId } = await seedBaseData(db);
+      mockGitAllSuccess();
+
+      const { heartbeatService } = await import("../services/heartbeat.ts");
+      const svc = heartbeatService(db as any);
+      const result = await svc.tryRunPreAdapterAggregateMerge({
+        issueId: randomUUID(),
+        agentId,
+        workspaceDir,
+      });
+
+      expect(result.outcome).toBe("gated");
+      expect(result.reason).toBe("issue_not_found");
+      expect(mockExecFile).not.toHaveBeenCalled();
+    });
+
+    it("no eligible handoffs: assignee gate passes but row state idempotent → skipped", async () => {
+      const { issueId, agentId, workspaceDir } = await seedBaseData(db);
+      mockGitAllSuccess();
+
+      const { heartbeatService } = await import("../services/heartbeat.ts");
+      const svc = heartbeatService(db as any);
+      const result = await svc.tryRunPreAdapterAggregateMerge({
+        issueId,
+        agentId,
+        workspaceDir,
+      });
+
+      expect(result.outcome).toBe("skipped");
+    });
+  });
 });
