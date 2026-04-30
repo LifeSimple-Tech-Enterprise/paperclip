@@ -47,6 +47,7 @@ import {
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { writeRolePackTmpFile } from "@paperclipai/adapter-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -331,6 +332,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const instructionsContents = asString(config.instructionsContents, "").trim();
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const runtimeConfig = await buildClaudeRuntimeConfig({
@@ -368,11 +370,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
-  // When instructionsFilePath is configured, build a stable content-addressed
+  // When instructionsContents is provided (role-pack path), use it directly.
+  // When instructionsFilePath is configured instead, build a stable content-addressed
   // file that includes both the file content and the path directive, so we only
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
   let combinedInstructionsContents: string | null = null;
-  if (instructionsFilePath) {
+  if (!instructionsContents && instructionsFilePath) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
       const pathDirective =
@@ -427,6 +430,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
       : promptBundle.instructionsFilePath
     : undefined;
+  // When instructionsContents is set (role-pack path), write a tmp file and use it
+  // as the instructions file path, superseding the bundle-derived path.
+  const rolePackFilePath = instructionsContents
+    ? await writeRolePackTmpFile({ runId, agentId: agent.id, contents: instructionsContents })
+    : null;
+  const finalInstructionsFilePath = rolePackFilePath ?? effectiveInstructionsFilePath;
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -550,15 +559,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
-    const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
+    const attemptInstructionsFilePath = resumeSessionId ? undefined : finalInstructionsFilePath;
     const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
     }
     if (attemptInstructionsFilePath && !resumeSessionId) {
+      const instructionsSource = rolePackFilePath
+        ? `role-pack tmpfile ${rolePackFilePath}`
+        : `${instructionsFilePath} (with path directive appended)`;
       commandNotes.push(
-        `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
+        `Injected agent instructions via --append-system-prompt-file ${instructionsSource}`,
       );
     }
     if (onMeta) {

@@ -1,3 +1,7 @@
+import { startRolePackSweepInterval } from "@paperclipai/adapter-utils";
+
+startRolePackSweepInterval();
+
 export { execute, runClaudeLogin } from "./execute.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels } from "./models.js";

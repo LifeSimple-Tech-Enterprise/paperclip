@@ -129,6 +129,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { renderRolePack, resolveRolePack } from "./role-packs.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -4915,10 +4916,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
-    let runtimeConfig = {
+    let runtimeConfig: typeof effectiveResolvedConfig & { paperclipRuntimeSkills: typeof runtimeSkillEntries; instructionsContents?: string } = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    const rolePackId = resolveRolePack(agent);
+    if (rolePackId !== null) {
+      runtimeConfig = {
+        ...runtimeConfig,
+        instructionsContents: renderRolePack(rolePackId, {
+          agentId: agent.id,
+          agentName: agent.name,
+          companyId: agent.companyId,
+        }),
+      };
+    }
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
@@ -5785,6 +5797,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
+      const isWakeTerminated = err instanceof Error && err.name === "WakeTerminatedError";
+      const errorCode = isWakeTerminated ? "wake_terminated_by_harness" : "adapter_failed";
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
@@ -5809,10 +5823,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode,
         finishedAt: new Date(),
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-          errorCode: "adapter_failed",
+          errorCode,
           errorMessage: message,
         }),
         stdoutExcerpt,

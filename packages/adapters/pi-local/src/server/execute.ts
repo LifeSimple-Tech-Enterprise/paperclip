@@ -381,6 +381,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // Handle instructions file and build system prompt extension
+  const instructionsContents = asString(config.instructionsContents, "").trim();
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const resolvedInstructionsFilePath = instructionsFilePath
     ? path.resolve(cwd, instructionsFilePath)
@@ -389,11 +390,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   let systemPromptExtension = "";
   let instructionsReadFailed = false;
-  if (resolvedInstructionsFilePath) {
+  if (instructionsContents) {
+    // Role-pack contents provided directly; use as system prompt extension (skip file read)
+    systemPromptExtension = `${instructionsContents}\n\n${promptTemplate}`;
+  } else if (resolvedInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
+      const fileContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
       systemPromptExtension =
-        `${instructionsContents}\n\n` +
+        `${fileContents}\n\n` +
         `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
         DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
