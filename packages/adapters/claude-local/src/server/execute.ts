@@ -185,7 +185,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const env: Record<string, string> = {
     ...legacyWakeEnv,
     // canonical ctx.wake overwrites legacy context.* fields when available
-    ...buildPaperclipEnv(agent, input.wake),
+    // LIF-425: pass executionTarget so loopback URL is used for local subprocess agents
+    ...buildPaperclipEnv(agent, input.wake, { executionTarget }),
   };
   env.PAPERCLIP_RUN_ID = runId;
 

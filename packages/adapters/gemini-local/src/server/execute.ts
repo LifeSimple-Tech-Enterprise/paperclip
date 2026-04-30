@@ -246,7 +246,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const env: Record<string, string> = {
     ...legacyWakeEnv,
     // canonical ctx.wake overwrites legacy context.* fields when available
-    ...buildPaperclipEnv(agent, ctx.wake as PaperclipWakeEnvelope | undefined),
+    // LIF-425: pass executionTarget so loopback URL is used for local subprocess agents
+    ...buildPaperclipEnv(agent, ctx.wake as PaperclipWakeEnvelope | undefined, { executionTarget }),
   };
   env.PAPERCLIP_RUN_ID = runId;
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;

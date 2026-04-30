@@ -825,9 +825,19 @@ interface WakeEnvelopeForEnv {
   linkedIssueIds?: string[];
 }
 
+/**
+ * LIF-425: structural hint so buildPaperclipEnv can pick a same-host loopback URL
+ * for local subprocess adapters and the env-injected public URL for SSH/sandbox.
+ * Inlined to avoid a circular import with execution-target.ts.
+ */
+export interface BuildPaperclipEnvOptions {
+  executionTarget?: { kind?: string | null } | null;
+}
+
 export function buildPaperclipEnv(
   agent: { id: string; companyId: string },
   wake?: WakeEnvelopeForEnv,
+  options?: BuildPaperclipEnvOptions,
 ): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
@@ -843,10 +853,17 @@ export function buildPaperclipEnv(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
+  const loopbackUrl = `http://${runtimeHost}:${runtimePort}`;
+  // LIF-425: env-injected PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL prefer the
+  // server's public hostname (allowedHostnames[0]). That host is correct for SSH/sandbox
+  // callbacks but unreachable for same-host subprocess adapters when the server is
+  // loopback-bound. Local targets use the loopback URL derived from PAPERCLIP_LISTEN_*.
+  const isRemoteTarget = options?.executionTarget?.kind === "remote";
+  const apiUrl = isRemoteTarget
+    ? (process.env.PAPERCLIP_RUNTIME_API_URL ??
+        process.env.PAPERCLIP_API_URL ??
+        loopbackUrl)
+    : loopbackUrl;
   vars.PAPERCLIP_API_URL = apiUrl;
 
   // Emit wake-context env vars from canonical envelope (LIF-382 / Stage 1)
