@@ -131,6 +131,10 @@ import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { renderRolePack, resolveRolePack } from "./role-packs.js";
 
+// LIF-447: char/4 token approximation for v1 instruction-token observation.
+const approxTokenCount = (s: string | null | undefined): number | null =>
+  s == null ? null : Math.ceil(s.length / 4);
+
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
@@ -4671,6 +4675,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
+    // LIF-447: hoist rolePack resolution here so claim log and DB update both carry the values.
+    // resolveRolePack only reads agent.adapterConfig — safe to call before workspace/adapter setup.
+    const rolePackId = resolveRolePack(agent);
+    const renderedRolePack = rolePackId !== null
+      ? renderRolePack(rolePackId, { agentId: agent.id, agentName: agent.name, companyId: agent.companyId })
+      : null;
+    const rolePackRendered = rolePackId !== null;
+    const instructionTokens = approxTokenCount(renderedRolePack);
     // LIF-377: phase claim log — emitted after auto-checkout decision; persists observation columns
     {
       const claimPostStatus = issueContext?.status ?? null;
@@ -4686,6 +4698,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ctxFieldUsed: "context",
         firedTransitions: claimFiredTransitions,
         suppressed: null,
+        rolePackRendered,
+        instructionTokens,
         ts: new Date().toISOString(),
       }, "wake.event");
       // LIF-384 Stage 1 follow-up: stamp declaredTransition so Acceptance #1 measurement can run.
@@ -4702,6 +4716,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .set({
             postCheckoutIssueStatus: claimPostStatus,
             firedTransitions: claimFiredTransitions,
+            rolePackRendered,
+            instructionTokens,
             ...(declaredTransition ? { declaredTransition } : {}),
             updatedAt: new Date(),
           })
@@ -4920,16 +4936,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
-    const rolePackId = resolveRolePack(agent);
-    if (rolePackId !== null) {
-      runtimeConfig = {
-        ...runtimeConfig,
-        instructionsContents: renderRolePack(rolePackId, {
-          agentId: agent.id,
-          agentName: agent.name,
-          companyId: agent.companyId,
-        }),
-      };
+    // LIF-447: reuse hoisted rolePackId/renderedRolePack from claim-phase (no double-render).
+    if (rolePackId !== null && renderedRolePack !== null) {
+      runtimeConfig = { ...runtimeConfig, instructionsContents: renderedRolePack };
     }
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,

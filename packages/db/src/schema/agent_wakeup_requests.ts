@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 
@@ -30,6 +30,9 @@ export const agentWakeupRequests = pgTable(
     suppressedReason: text("suppressed_reason"),
     // LIF-382: FSM transition key emitted at checkout (additive nullable, Stage 1)
     declaredTransition: text("declared_transition"),
+    // LIF-447: rolePack render + instruction-token observation (additive nullable, Stage 3e2 prep)
+    rolePackRendered: boolean("role_pack_rendered"),
+    instructionTokens: integer("instruction_tokens"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -52,6 +52,11 @@ export interface WakeEventsBaseline {
   ctxFieldUsage: CtxFieldUsageRow[];
   /** Stage 2 (LIF-374) AC #2: handoff.auto_rejected events bucketed by UTC day. */
   handoffScopeRejections: HandoffScopeRejectionRow[];
+  /** LIF-447: count of wakes where a role pack was rendered (rolePackRendered = true). */
+  rolePackRenderedCount: number;
+  /** LIF-447: instruction-token P50/P95 across wakes that rendered (excludes nulls). */
+  instructionTokensP50: number;
+  instructionTokensP95: number;
 }
 
 export function wakeEventsBaselineService(db: Db) {
@@ -157,6 +162,24 @@ export function wakeEventsBaselineService(db: Db) {
         .groupBy(rejectionDayExpr)
         .orderBy(asc(rejectionDayExpr));
 
+      // LIF-447 Stage 3e2: rolePackRenderedCount + instructionTokens percentiles.
+      const [{ rolePackRenderedCount }] = await db
+        .select({ rolePackRenderedCount: sql<number>`count(*)` })
+        .from(agentWakeupRequests)
+        .where(and(baseWhere, eq(agentWakeupRequests.rolePackRendered, true)));
+
+      const tokenPercentileRows = await db.execute<{ p50: number | null; p95: number | null }>(sql`
+        select
+          percentile_cont(0.5) within group (order by instruction_tokens) as p50,
+          percentile_cont(0.95) within group (order by instruction_tokens) as p95
+        from agent_wakeup_requests
+        where company_id = ${companyId}
+          and requested_at >= ${since.toISOString()}::timestamptz
+          and requested_at <= ${until.toISOString()}::timestamptz
+          and instruction_tokens is not null
+      `);
+      const tokenPercentiles = (tokenPercentileRows as unknown as Array<{ p50: number | null; p95: number | null }>)[0] ?? null;
+
       return {
         windowStart: since.toISOString(),
         windowEnd: until.toISOString(),
@@ -186,6 +209,9 @@ export function wakeEventsBaselineService(db: Db) {
           date: row.date,
           count: Number(row.count),
         })),
+        rolePackRenderedCount: Number(rolePackRenderedCount ?? 0),
+        instructionTokensP50: Number(tokenPercentiles?.p50 ?? 0),
+        instructionTokensP95: Number(tokenPercentiles?.p95 ?? 0),
       };
     },
   };
