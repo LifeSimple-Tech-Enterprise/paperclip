@@ -82,6 +82,7 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { resolveRolePack, rolePackRequiresWorkspace } from "../services/role-packs.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1689,8 +1690,13 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
+    const resolvedRolePack = resolveRolePack({ id: "pending", adapterConfig: normalizedAdapterConfig });
+    const requiresWorkspaceDefault = resolvedRolePack !== null ? rolePackRequiresWorkspace(resolvedRolePack) : false;
+    const requiresWorkspace = createInput.requiresWorkspace ?? requiresWorkspaceDefault;
+
     const createdAgent = await svc.create(companyId, {
       ...createInput,
+      requiresWorkspace,
       adapterConfig: normalizedAdapterConfig,
       runtimeConfig: normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
       status: "idle",

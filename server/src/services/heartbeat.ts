@@ -37,7 +37,7 @@ import {
   projectWorkspaces,
   workspaceOperations,
 } from "@paperclipai/db";
-import { conflict, HttpError, notFound } from "../errors.js";
+import { conflict, descriptiveError, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -129,7 +129,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
-import { renderRolePack, resolveRolePack } from "./role-packs.js";
+import { renderRolePack, resolveRolePack, rolePackRequiresWorkspace } from "./role-packs.js";
 
 // LIF-447: char/4 token approximation for v1 instruction-token observation.
 const approxTokenCount = (s: string | null | undefined): number | null =>
@@ -4876,6 +4876,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
+    const wakeNeedsWorkspace =
+      process.env.WAKE_REQUIRES_WORKSPACE === "true" &&
+      (agent.requiresWorkspace === true || (rolePackId !== null && rolePackRequiresWorkspace(rolePackId))) &&
+      !issueRef?.executionWorkspaceId;
     const shouldReuseExisting =
       issueRef?.executionWorkspacePreference === "reuse_existing" &&
       existingExecutionWorkspace !== null &&
@@ -4959,17 +4963,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           workspace: existingExecutionWorkspace,
         })
       : null;
-    const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
-          base: executionWorkspaceBase,
-          config: runtimeConfig,
-          issue: issueRef,
-          agent: {
-            id: agent.id,
-            name: agent.name,
-            companyId: agent.companyId,
-          },
-          recorder: workspaceOperationRecorder,
-        });
+    let executionWorkspace: RealizedExecutionWorkspace;
+    try {
+      executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
+        base: executionWorkspaceBase,
+        config: runtimeConfig,
+        issue: issueRef,
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          companyId: agent.companyId,
+        },
+        recorder: workspaceOperationRecorder,
+      });
+    } catch (allocErr) {
+      if (wakeNeedsWorkspace) {
+        throw descriptiveError(
+          "NO_EXECUTION_WORKSPACE",
+          `Issue ${issueRef?.identifier ?? issueId ?? "unknown"} has no executionWorkspace and auto-allocation failed: ${allocErr instanceof Error ? allocErr.message : String(allocErr)}.`,
+          { issueId, agentId: agent.id },
+        );
+      }
+      throw allocErr;
+    }
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
@@ -5064,6 +5080,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       throw error;
     }
     await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace?.id ?? null);
+    if (wakeNeedsWorkspace && !persistedExecutionWorkspace) {
+      throw descriptiveError(
+        "NO_EXECUTION_WORKSPACE",
+        `Issue ${issueRef?.identifier ?? issueId ?? "unknown"} has no executionWorkspace and auto-allocation failed: project context unavailable.`,
+        { issueId, agentId: agent.id },
+      );
+    }
     if (
       existingExecutionWorkspace &&
       persistedExecutionWorkspace &&
@@ -5807,7 +5830,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
       const isWakeTerminated = err instanceof Error && err.name === "WakeTerminatedError";
-      const errorCode = isWakeTerminated ? "wake_terminated_by_harness" : "adapter_failed";
+      const isNoWorkspace = err instanceof HttpError && err.code === "NO_EXECUTION_WORKSPACE";
+      const errorCode = isWakeTerminated
+        ? "wake_terminated_by_harness"
+        : isNoWorkspace
+          ? "no_execution_workspace"
+          : "adapter_failed";
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
@@ -5859,6 +5887,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
         await finalizeIssueCommentPolicy(livenessRun, agent);
+        if (isNoWorkspace && issueId) {
+          try {
+            await issuesSvc.update(issueId, { status: "blocked" });
+          } catch (blockErr) {
+            logger.warn({ err: blockErr, runId, issueId }, "failed to patch issue blocked for NO_EXECUTION_WORKSPACE");
+          }
+        }
         await releaseIssueExecutionAndPromote(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {

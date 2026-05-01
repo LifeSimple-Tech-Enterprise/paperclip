@@ -2010,6 +2010,20 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    if (
+      process.env.WAKE_REQUIRES_WORKSPACE === "true" &&
+      typeof normalizedAssigneeAgentId === "string" &&
+      !existing.executionWorkspaceId
+    ) {
+      const candidateAgent = await agentsSvc.getById(normalizedAssigneeAgentId);
+      if (candidateAgent?.requiresWorkspace) {
+        throw descriptiveError(
+          "NO_EXECUTION_WORKSPACE",
+          `Issue ${existing.identifier ?? existing.id} cannot be assigned to agent ${candidateAgent.name}: agent requires an executionWorkspace but none is linked to this issue.`,
+          { issueId: existing.id, agentId: normalizedAssigneeAgentId },
+        );
+      }
+    }
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }

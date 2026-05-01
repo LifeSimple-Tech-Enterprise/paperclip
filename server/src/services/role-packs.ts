@@ -75,6 +75,12 @@ Record the missing tool name in a comment, mark the issue blocked with reason='M
 If stuck, read \`{{REFERENCE_DOCS_ROOT}}/critique/AGENTS.md\`, \`HEARTBEAT.md\`, \`SOUL.md\`, \`TOOLS.md\`.`,
 };
 
+const WORKSPACE_REQUIRED_ROLE_PACKS: Set<string> = new Set(["lead", "drafter", "critique"]);
+
+export function rolePackRequiresWorkspace(roleId: RoleId): boolean {
+  return WORKSPACE_REQUIRED_ROLE_PACKS.has(roleId);
+}
+
 export type AdapterInventoryEntry = {
   readerTool: string;
   preferredTransport: "instructions_file" | "argv" | "http_json" | "stdin";
