@@ -182,3 +182,27 @@ describe("resolveRolePack", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("critique pack — runGitState verification (LIF-457)", () => {
+  const pack = ROLE_PACK_TEMPLATES["critique"];
+
+  it("references runGitState in the wake-decision tree", () => {
+    expect(pack).toContain("runGitState");
+  });
+
+  it("references commitsCreated field", () => {
+    expect(pack).toContain("commitsCreated");
+  });
+
+  it("references pushedRefs field", () => {
+    expect(pack).toContain("pushedRefs");
+  });
+
+  it("references remoteUrl field", () => {
+    expect(pack).toContain("remoteUrl");
+  });
+
+  it("prohibits extracting SHAs from Drafter prose", () => {
+    expect(pack).toMatch(/never extract SHAs from Drafter prose/i);
+  });
+});
