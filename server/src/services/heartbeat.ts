@@ -5092,7 +5092,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         { issueId, agentId: agent.id },
       );
     }
-    if (executionWorkspace.cwd) {
+    if (
+      process.env.WAKE_REQUIRES_WORKSPACE === "true" &&
+      (agent.requiresWorkspace === true || (rolePackId !== null && rolePackRequiresWorkspace(rolePackId))) &&
+      executionWorkspace.cwd
+    ) {
       let gitWorktreeValid = false;
       try {
         const gitResult = await execFile("git", ["rev-parse", "--is-inside-work-tree"], {
