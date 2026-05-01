@@ -64,6 +64,11 @@ import {
   mergeHeartbeatRunStopMetadata,
 } from "./heartbeat-stop-metadata.js";
 import {
+  capturePreRunGitState,
+  capturePostRunGitState,
+  type PreRunGitSnapshot,
+} from "./git-state-capture.js";
+import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -5087,6 +5092,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         { issueId, agentId: agent.id },
       );
     }
+    if (executionWorkspace.cwd) {
+      let gitWorktreeValid = false;
+      try {
+        const gitResult = await execFile("git", ["rev-parse", "--is-inside-work-tree"], {
+          cwd: executionWorkspace.cwd,
+          timeout: 10_000,
+          killSignal: "SIGTERM",
+        });
+        gitWorktreeValid = gitResult.stdout.trim() === "true";
+      } catch {
+        gitWorktreeValid = false;
+      }
+      if (!gitWorktreeValid) {
+        throw descriptiveError(
+          "NO_GIT_WORKTREE",
+          `Worktree at ${executionWorkspace.cwd} is not a git work tree (executionWorkspaceId=${persistedExecutionWorkspace?.id ?? "none"}).`,
+          { cwd: executionWorkspace.cwd, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
+        );
+      }
+    }
+    // LIF-456: capture pre-run git snapshot (headBefore + branchBefore)
+    let preRunGitSnapshot: PreRunGitSnapshot | null = null;
+    if (executionWorkspace.cwd) {
+      preRunGitSnapshot = await capturePreRunGitState(executionWorkspace.cwd);
+      if (preRunGitSnapshot) {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            runGitState: {
+              headBefore: preRunGitSnapshot.headBefore,
+              branchBefore: preRunGitSnapshot.branchBefore,
+              headAfter: preRunGitSnapshot.headBefore,
+              branchAfter: preRunGitSnapshot.branchBefore,
+              commitsCreated: [],
+              pushedRefs: [],
+              pushed: false,
+              remoteUrl: null,
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
+      }
+    }
     if (
       existingExecutionWorkspace &&
       persistedExecutionWorkspace &&
@@ -5638,6 +5686,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
+      // LIF-456: capture post-run git state (headAfter, commitsCreated, pushedRefs)
+      let capturedRunGitState: import("@paperclipai/db").RunGitState | null = null;
+      if (executionWorkspace.cwd && preRunGitSnapshot) {
+        try {
+          capturedRunGitState = await capturePostRunGitState(
+            executionWorkspace.cwd,
+            preRunGitSnapshot,
+          );
+        } catch {
+          // non-fatal
+        }
+      }
+
       const nextSessionState = resolveNextSessionState({
         codec: sessionCodec,
         adapterResult,
@@ -5755,6 +5816,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
+        ...(capturedRunGitState ? { runGitState: capturedRunGitState } : {}),
       });
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
@@ -5775,6 +5837,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             status,
             exitCode: adapterResult.exitCode,
+            ...(capturedRunGitState ? { runGitState: capturedRunGitState as unknown as Record<string, unknown> } : {}),
           },
         });
         const livenessRun = finalizedRun;
@@ -5831,11 +5894,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } catch (err) {
       const isWakeTerminated = err instanceof Error && err.name === "WakeTerminatedError";
       const isNoWorkspace = err instanceof HttpError && err.code === "NO_EXECUTION_WORKSPACE";
+      const isNoGitWorktree = err instanceof HttpError && err.code === "NO_GIT_WORKTREE";
       const errorCode = isWakeTerminated
         ? "wake_terminated_by_harness"
         : isNoWorkspace
           ? "no_execution_workspace"
-          : "adapter_failed";
+          : isNoGitWorktree
+            ? "no_git_worktree"
+            : "adapter_failed";
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
@@ -5893,6 +5959,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           } catch (blockErr) {
             logger.warn({ err: blockErr, runId, issueId }, "failed to patch issue blocked for NO_EXECUTION_WORKSPACE");
           }
+        }
+        if (isNoGitWorktree && issueId) {
+          const worktreeDetails = err instanceof HttpError
+            ? (err.details as { cwd?: string; executionWorkspaceId?: string | null } | null)
+            : null;
+          try {
+            const commentBody = `Worktree at ${worktreeDetails?.cwd ?? "unknown"} is not a git work tree (executionWorkspaceId=${worktreeDetails?.executionWorkspaceId ?? "none"}).`;
+            await db.insert(issueComments).values({
+              companyId: agent.companyId,
+              issueId,
+              authorAgentId: agent.id,
+              authorUserId: null,
+              createdByRunId: failedRun.id,
+              body: commentBody,
+              metadata: { kind: "blocker", reason: "NO_GIT_WORKTREE" },
+            });
+            await issuesSvc.update(issueId, { status: "blocked" });
+          } catch (blockErr) {
+            logger.warn({ err: blockErr, runId, issueId }, "failed to post comment or block issue for NO_GIT_WORKTREE");
+          }
+          await appendRunEvent(failedRun, seq++, {
+            eventType: "wake_aborted",
+            stream: "system",
+            level: "warn",
+            message: "Wake aborted: NO_GIT_WORKTREE",
+            payload: { reason: "NO_GIT_WORKTREE" },
+          });
         }
         await releaseIssueExecutionAndPromote(livenessRun);
 
