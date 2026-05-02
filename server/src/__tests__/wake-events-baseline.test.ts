@@ -54,7 +54,13 @@ function insertWakeRow(
   companyId: string,
   agentId: string,
   requestedAt: Date,
-  opts: { rolePackRendered?: boolean | null; instructionTokens?: number | null } = {},
+  opts: {
+    rolePackRendered?: boolean | null;
+    instructionTokens?: number | null;
+    priorIssueStatus?: string | null;
+    finalIssueStatus?: string | null;
+    suppressedReason?: string | null;
+  } = {},
 ) {
   return db.insert(agentWakeupRequests).values({
     companyId,
@@ -64,6 +70,9 @@ function insertWakeRow(
     requestedAt,
     rolePackRendered: opts.rolePackRendered ?? null,
     instructionTokens: opts.instructionTokens ?? null,
+    priorIssueStatus: opts.priorIssueStatus ?? null,
+    finalIssueStatus: opts.finalIssueStatus ?? null,
+    suppressedReason: opts.suppressedReason ?? null,
   });
 }
 
@@ -236,5 +245,140 @@ describeEmbeddedPostgres("wakeEventsBaselineService — handoffScopeRejections (
 
     expect(result.handoffScopeRejections).toHaveLength(1);
     expect(result.handoffScopeRejections[0]).toEqual({ date: "2026-04-20", count: 1 });
+  });
+});
+
+describeEmbeddedPostgres("wakeEventsBaselineService — completionRate (LIF-448)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-wake-events-lif448-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("returns { numerator: 0, denominator: 0, ratio: 0 } when no wakes in window", async () => {
+    const company = await seedCompany(db);
+    const svc = wakeEventsBaselineService(db);
+    const result = await svc.getBaseline(company.id, {
+      since: new Date("2026-04-01T00:00:00.000Z"),
+      until: new Date("2026-04-07T23:59:59.999Z"),
+    });
+    expect(result.completionRate).toEqual({ numerator: 0, denominator: 0, ratio: 0 });
+  });
+
+  it("counts only wakes with priorIssueStatus in todo/in_progress in denominator", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const since = new Date("2026-04-13T00:00:00.000Z");
+    const until = new Date("2026-04-13T23:59:59.999Z");
+    const at = new Date("2026-04-13T12:00:00.000Z");
+
+    // Qualifies for denominator
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "todo", finalIssueStatus: "in_progress" });
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "in_progress", finalIssueStatus: "in_progress" });
+    // Does not qualify (prior is blocked/done/null)
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "blocked", finalIssueStatus: "done" });
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "done", finalIssueStatus: "done" });
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: null, finalIssueStatus: "done" });
+
+    const svc = wakeEventsBaselineService(db);
+    const result = await svc.getBaseline(company.id, { since, until });
+
+    expect(result.completionRate.denominator).toBe(2);
+    expect(result.completionRate.numerator).toBe(0);
+    expect(result.completionRate.ratio).toBe(0);
+  });
+
+  it("counts only wakes with finalIssueStatus in done/in_review in numerator", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const since = new Date("2026-04-14T00:00:00.000Z");
+    const until = new Date("2026-04-14T23:59:59.999Z");
+    const at = new Date("2026-04-14T12:00:00.000Z");
+
+    // Numerator: done
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "todo", finalIssueStatus: "done" });
+    // Numerator: in_review
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "todo", finalIssueStatus: "in_review" });
+    // Denominator only: final is in_progress (not done/in_review)
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "in_progress", finalIssueStatus: "in_progress" });
+    // Denominator only: final is null (instrumentation not yet present)
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "todo", finalIssueStatus: null });
+
+    const svc = wakeEventsBaselineService(db);
+    const result = await svc.getBaseline(company.id, { since, until });
+
+    expect(result.completionRate.denominator).toBe(4);
+    expect(result.completionRate.numerator).toBe(2);
+    expect(result.completionRate.ratio).toBe(0.5);
+  });
+
+  it("excludes suppressed wakes from both numerator and denominator", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const since = new Date("2026-04-15T00:00:00.000Z");
+    const until = new Date("2026-04-15T23:59:59.999Z");
+    const at = new Date("2026-04-15T12:00:00.000Z");
+
+    // Counts: prior=todo, not suppressed
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "todo", finalIssueStatus: "done" });
+    // Suppressed — must be excluded even if finalIssueStatus = done
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "todo", finalIssueStatus: "done", suppressedReason: "coalesced" });
+    // Suppressed — must be excluded from denominator too
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "in_progress", finalIssueStatus: "in_progress", suppressedReason: "deferred" });
+
+    const svc = wakeEventsBaselineService(db);
+    const result = await svc.getBaseline(company.id, { since, until });
+
+    expect(result.completionRate.denominator).toBe(1);
+    expect(result.completionRate.numerator).toBe(1);
+    expect(result.completionRate.ratio).toBe(1);
+  });
+
+  it("excludes wakes outside the time window", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const since = new Date("2026-04-16T00:00:00.000Z");
+    const until = new Date("2026-04-16T23:59:59.999Z");
+
+    // In window — counts
+    await insertWakeRow(db, company.id, agent.id, new Date("2026-04-16T12:00:00.000Z"), { priorIssueStatus: "todo", finalIssueStatus: "done" });
+    await insertWakeRow(db, company.id, agent.id, new Date("2026-04-16T12:00:00.000Z"), { priorIssueStatus: "in_progress", finalIssueStatus: "in_progress" });
+    // Before window — excluded
+    await insertWakeRow(db, company.id, agent.id, new Date("2026-04-15T23:59:59.000Z"), { priorIssueStatus: "todo", finalIssueStatus: "done" });
+    // After window — excluded
+    await insertWakeRow(db, company.id, agent.id, new Date("2026-04-17T00:00:01.000Z"), { priorIssueStatus: "todo", finalIssueStatus: "done" });
+
+    const svc = wakeEventsBaselineService(db);
+    const result = await svc.getBaseline(company.id, { since, until });
+
+    expect(result.completionRate.denominator).toBe(2);
+    expect(result.completionRate.numerator).toBe(1);
+    expect(result.completionRate.ratio).toBe(0.5);
+  });
+
+  it("computes ratio correctly for 2/4 = 0.5", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const since = new Date("2026-04-17T00:00:00.000Z");
+    const until = new Date("2026-04-17T23:59:59.999Z");
+    const at = new Date("2026-04-17T12:00:00.000Z");
+
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "todo", finalIssueStatus: "done" });
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "todo", finalIssueStatus: "in_review" });
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "in_progress", finalIssueStatus: "in_progress" });
+    await insertWakeRow(db, company.id, agent.id, at, { priorIssueStatus: "in_progress", finalIssueStatus: null });
+
+    const svc = wakeEventsBaselineService(db);
+    const result = await svc.getBaseline(company.id, { since, until });
+
+    expect(result.completionRate.denominator).toBe(4);
+    expect(result.completionRate.numerator).toBe(2);
+    expect(result.completionRate.ratio).toBe(0.5);
   });
 });

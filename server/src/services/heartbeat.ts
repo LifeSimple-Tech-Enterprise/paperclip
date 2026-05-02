@@ -2772,11 +2772,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     wakeupRequestId: string | null | undefined,
     status: string,
     patch?: Partial<typeof agentWakeupRequests.$inferInsert>,
+    opts?: { issueId?: string | null },
   ) {
     if (!wakeupRequestId) return;
+    let finalIssueStatus: string | null = null;
+    if (opts?.issueId && patch?.finishedAt) {
+      finalIssueStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, opts.issueId))
+        .then((rows) => rows[0]?.status ?? null);
+    }
     await db
       .update(agentWakeupRequests)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...patch, ...(finalIssueStatus !== null ? { finalIssueStatus } : {}), updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
   }
 
@@ -3633,6 +3642,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 status: "cancelled",
                 finishedAt: now,
                 error: reason,
+                finalIssueStatus: issue.status,
                 updatedAt: now,
               })
               .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
@@ -3922,7 +3932,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await setWakeupStatus(run.wakeupRequestId, "skipped", {
       finishedAt: now,
       error: reason,
-    });
+    }, { issueId });
 
     await db
       .update(issues)
@@ -4303,7 +4313,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-      });
+      }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
@@ -4638,7 +4648,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: "Agent not found",
-      });
+      }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) });
       const failedRun = await getRun(runId);
       if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
       return;
@@ -5829,7 +5839,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
         error: runErrorMessage,
-      });
+      }, { issueId });
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
       if (finalizedRun) {
@@ -5945,7 +5955,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: message,
-      });
+      }, { issueId });
 
       if (failedRun) {
         await appendRunEvent(failedRun, seq++, {
@@ -6038,7 +6048,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await setWakeupStatus(run.wakeupRequestId, "failed", {
             finishedAt: new Date(),
             error: message,
-          }).catch(() => undefined);
+          }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) }).catch(() => undefined);
           const failedRun = await getRun(runId).catch(() => null);
           if (failedRun) {
             // Emit a run-log event so the failure is visible in the run timeline,
@@ -6192,6 +6202,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: "failed",
               finishedAt: new Date(),
               error: "Deferred wake could not be promoted: agent is not invokable",
+              finalIssueStatus: issue.status,
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, deferred.id));
@@ -6216,6 +6227,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: "cancelled",
               finishedAt: new Date(),
               error: "Deferred wake suppressed by active subtree pause hold",
+              finalIssueStatus: issue.status,
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, deferred.id));
@@ -6824,6 +6836,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 status: "cancelled",
                 finishedAt: now,
                 error: reason,
+                finalIssueStatus: issue.status,
                 updatedAt: now,
               })
               .where(eq(agentWakeupRequests.id, scheduledRun.wakeupRequestId));
@@ -7467,7 +7480,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),
       error: reason,
-    });
+    }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) });
 
     if (cancelled) {
       await appendRunEvent(cancelled, 1, {
@@ -7509,7 +7522,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: new Date(),
         error: reason,
-      });
+      }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) });
 
       const running = runningProcesses.get(run.id);
       if (running) {

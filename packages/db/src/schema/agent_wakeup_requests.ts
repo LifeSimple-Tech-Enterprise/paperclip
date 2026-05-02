@@ -33,6 +33,8 @@ export const agentWakeupRequests = pgTable(
     // LIF-447: rolePack render + instruction-token observation (additive nullable, Stage 3e2 prep)
     rolePackRendered: boolean("role_pack_rendered"),
     instructionTokens: integer("instruction_tokens"),
+    // LIF-448: issue status sampled at wake finalization (additive nullable)
+    finalIssueStatus: text("final_issue_status"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
