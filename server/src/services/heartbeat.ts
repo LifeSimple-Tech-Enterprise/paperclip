@@ -31,6 +31,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueThreadInteractions,
   issues,
   issueWorkProducts,
   projects,
@@ -155,6 +156,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 // REFACTOR-LIF-371: review_gate_wake_loop — WAKE_COMMENT_IDS_KEY accumulates comment ids across coalesced wakes to prevent re-processing
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
+const WAKE_INTERACTION_KEY = "wakeInteraction";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
@@ -1534,6 +1536,34 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   return merged;
 }
 
+export function extractWakeInteraction(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  const raw = contextSnapshot?.[WAKE_INTERACTION_KEY];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const id = readNonEmptyString((raw as Record<string, unknown>).id);
+  if (!id) return null;
+  return raw as Record<string, unknown>;
+}
+
+function mergeWakeInteraction(...values: Array<unknown>): Record<string, unknown> | null {
+  let merged: Record<string, unknown> | null = null;
+  for (const value of values) {
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const candidate = value as Record<string, unknown>;
+      // Direct wakeInteraction object
+      if (readNonEmptyString(candidate.id)) {
+        merged = candidate;
+        continue;
+      }
+      // Context snapshot containing wakeInteraction
+      const nested = extractWakeInteraction(candidate);
+      if (nested) merged = nested;
+    }
+  }
+  return merged;
+}
+
 function enrichWakeContextSnapshot(input: {
   contextSnapshot: Record<string, unknown>;
   reason: string | null;
@@ -1580,6 +1610,13 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  const wakeInteraction = mergeWakeInteraction(
+    extractWakeInteraction(contextSnapshot),
+    payload?.[WAKE_INTERACTION_KEY],
+  );
+  if (wakeInteraction) {
+    contextSnapshot[WAKE_INTERACTION_KEY] = wakeInteraction;
+  }
 
   return {
     contextSnapshot,
@@ -1609,6 +1646,13 @@ export function mergeCoalescedContextSnapshot(
     // regenerate any structured payload from those ids.
     delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
   }
+  const mergedInteraction = mergeWakeInteraction(
+    extractWakeInteraction(existing),
+    extractWakeInteraction(incoming),
+  );
+  if (mergedInteraction) {
+    merged[WAKE_INTERACTION_KEY] = mergedInteraction;
+  }
   return merged;
 }
 
@@ -1636,6 +1680,7 @@ async function buildPaperclipWakePayload(input: {
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
+  const wakeInteractionSnapshot = extractWakeInteraction(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
@@ -1653,7 +1698,46 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary && !wakeInteractionSnapshot) return null;
+
+  const interactionId = wakeInteractionSnapshot ? readNonEmptyString(wakeInteractionSnapshot.id) : null;
+  const interactionRow = interactionId
+    ? await input.db
+        .select({
+          id: issueThreadInteractions.id,
+          kind: issueThreadInteractions.kind,
+          status: issueThreadInteractions.status,
+          result: issueThreadInteractions.result,
+          resolvedAt: issueThreadInteractions.resolvedAt,
+          resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+          resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+          sourceCommentId: issueThreadInteractions.sourceCommentId,
+          sourceRunId: issueThreadInteractions.sourceRunId,
+        })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, input.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null)
+    : null;
+  const interactionEvents = interactionRow
+    ? [
+        {
+          id: interactionRow.id,
+          kind: interactionRow.kind,
+          status: interactionRow.status,
+          result: interactionRow.result ?? null,
+          resolvedAt: interactionRow.resolvedAt?.toISOString() ?? null,
+          resolvedByAgentId: interactionRow.resolvedByAgentId ?? null,
+          resolvedByUserId: interactionRow.resolvedByUserId ?? null,
+          sourceCommentId: interactionRow.sourceCommentId ?? null,
+          sourceRunId: interactionRow.sourceRunId ?? null,
+        },
+      ]
+    : [];
 
   const commentRows =
     commentIds.length === 0
@@ -1778,6 +1862,7 @@ async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
+    interactionEvents,
     truncated,
     fallbackFetchNeeded: truncated || missingCommentCount > 0,
   };

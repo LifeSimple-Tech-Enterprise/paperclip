@@ -342,6 +342,18 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeInteractionEvent = {
+  id: string | null;
+  kind: string | null;
+  status: string | null;
+  result: unknown;
+  resolvedAt: string | null;
+  resolvedByAgentId: string | null;
+  resolvedByUserId: string | null;
+  sourceCommentId: string | null;
+  sourceRunId: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -359,6 +371,7 @@ type PaperclipWakePayload = {
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
+  interactionEvents: PaperclipWakeInteractionEvent[];
   requestedCount: number;
   includedCount: number;
   missingCount: number;
@@ -464,6 +477,47 @@ function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTre
   return { holdId, rootIssueId, mode, reason };
 }
 
+function normalizePaperclipWakeInteractionEvent(value: unknown): PaperclipWakeInteractionEvent | null {
+  const ev = parseObject(value);
+  const id = asString(ev.id, "").trim() || null;
+  if (!id) return null;
+  return {
+    id,
+    kind: asString(ev.kind, "").trim() || null,
+    status: asString(ev.status, "").trim() || null,
+    result: ev.result ?? null,
+    resolvedAt: asString(ev.resolvedAt, "").trim() || null,
+    resolvedByAgentId: asString(ev.resolvedByAgentId, "").trim() || null,
+    resolvedByUserId: asString(ev.resolvedByUserId, "").trim() || null,
+    sourceCommentId: asString(ev.sourceCommentId, "").trim() || null,
+    sourceRunId: asString(ev.sourceRunId, "").trim() || null,
+  };
+}
+
+function summarizeInteractionResult(kind: string | null, result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  if (kind === "ask_user_questions") {
+    const summary = asString(r.summaryMarkdown, "").trim();
+    if (summary) return summary;
+    const answers = Array.isArray(r.answers) ? r.answers.length : 0;
+    return answers > 0 ? `${answers} answer(s) provided` : null;
+  }
+  if (kind === "request_confirmation") {
+    const outcome = asString(r.outcome, "").trim();
+    const reason = asString(r.reason, "").trim();
+    if (outcome) return reason ? `${outcome}: ${reason}` : outcome;
+    return null;
+  }
+  if (kind === "suggest_tasks") {
+    const rejectionReason = asString(r.rejectionReason, "").trim();
+    if (rejectionReason) return `rejected: ${rejectionReason}`;
+    const created = Array.isArray(r.createdTasks) ? r.createdTasks.length : 0;
+    return created > 0 ? `${created} task(s) created` : null;
+  }
+  return null;
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -545,7 +599,12 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  const interactionEvents = Array.isArray(payload.interactionEvents)
+    ? payload.interactionEvents
+        .map((entry) => normalizePaperclipWakeInteractionEvent(entry))
+        .filter((entry): entry is PaperclipWakeInteractionEvent => Boolean(entry))
+    : [];
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && interactionEvents.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -566,6 +625,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
+    interactionEvents,
     requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
@@ -594,6 +654,17 @@ export function renderPaperclipWakePrompt(
     return principal.userId ? `user ${principal.userId}` : "user";
   };
 
+  const hasOnlyInteractions =
+    normalized.interactionEvents.length > 0 &&
+    normalized.requestedCount === 0 &&
+    normalized.includedCount === 0;
+  const commentCountLine = hasOnlyInteractions
+    ? `- resolved interactions: ${normalized.interactionEvents.length}`
+    : `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`;
+  const latestIdLine = hasOnlyInteractions
+    ? `- latest interaction id: ${normalized.interactionEvents[normalized.interactionEvents.length - 1]?.id ?? "unknown"}`
+    : `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`;
+
   const lines = resumedSession
       ? [
         "## Paperclip Resume Delta",
@@ -607,8 +678,8 @@ export function renderPaperclipWakePrompt(
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        commentCountLine,
+        latestIdLine,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ]
     : [
@@ -624,8 +695,8 @@ export function renderPaperclipWakePrompt(
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        commentCountLine,
+        latestIdLine,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ];
 
@@ -772,6 +843,26 @@ export function renderPaperclipWakePrompt(
       lines.push("[comment body truncated]");
     }
     lines.push("");
+  }
+
+  if (normalized.interactionEvents.length > 0) {
+    lines.push("Resolved interactions in this wake:");
+    for (const [index, ev] of normalized.interactionEvents.entries()) {
+      const actorLabel = ev.resolvedByAgentId
+        ? `agent ${ev.resolvedByAgentId}`
+        : ev.resolvedByUserId
+          ? `user ${ev.resolvedByUserId}`
+          : "unknown";
+      lines.push(
+        `${index + 1}. interaction ${ev.id ?? "unknown"} (${ev.kind ?? "unknown"}) resolved at ${ev.resolvedAt ?? "unknown"} by ${actorLabel}`,
+        `   status: ${ev.status ?? "unknown"}`,
+      );
+      const summary = summarizeInteractionResult(ev.kind, ev.result);
+      if (summary) {
+        lines.push(`   result: ${summary}`);
+      }
+      lines.push("");
+    }
   }
 
   return lines.join("\n").trim();
