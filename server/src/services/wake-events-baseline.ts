@@ -39,6 +39,12 @@ export interface HandoffScopeRejectionRow {
   count: number;
 }
 
+export interface CompletionRate {
+  numerator: number;
+  denominator: number;
+  ratio: number;
+}
+
 export interface WakeEventsBaseline {
   windowStart: string;
   windowEnd: string;
@@ -57,6 +63,8 @@ export interface WakeEventsBaseline {
   /** LIF-447: instruction-token P50/P95 across wakes that rendered (excludes nulls). */
   instructionTokensP50: number;
   instructionTokensP95: number;
+  /** LIF-448: completion-rate scalar (agent drove issue to done/in_review). */
+  completionRate: CompletionRate;
 }
 
 export function wakeEventsBaselineService(db: Db) {
@@ -180,6 +188,24 @@ export function wakeEventsBaselineService(db: Db) {
       `);
       const tokenPercentiles = (tokenPercentileRows as unknown as Array<{ p50: number | null; p95: number | null }>)[0] ?? null;
 
+      // LIF-448: completion-rate scalar.
+      // D = wakes where priorIssueStatus ∈ {todo, in_progress} AND suppressedReason IS NULL.
+      // N = D subset where finalIssueStatus ∈ {done, in_review}.
+      const completionRateRows = await db.execute<{ numerator: number | null; denominator: number | null }>(sql`
+        select
+          count(*) filter (where final_issue_status in ('done', 'in_review')) as numerator,
+          count(*) as denominator
+        from agent_wakeup_requests
+        where company_id = ${companyId}
+          and requested_at >= ${since.toISOString()}::timestamptz
+          and requested_at <= ${until.toISOString()}::timestamptz
+          and prior_issue_status in ('todo', 'in_progress')
+          and suppressed_reason is null
+      `);
+      const crRow = (completionRateRows as unknown as Array<{ numerator: number | null; denominator: number | null }>)[0] ?? null;
+      const crNumerator = Number(crRow?.numerator ?? 0);
+      const crDenominator = Number(crRow?.denominator ?? 0);
+
       return {
         windowStart: since.toISOString(),
         windowEnd: until.toISOString(),
@@ -212,6 +238,11 @@ export function wakeEventsBaselineService(db: Db) {
         rolePackRenderedCount: Number(rolePackRenderedCount ?? 0),
         instructionTokensP50: Number(tokenPercentiles?.p50 ?? 0),
         instructionTokensP95: Number(tokenPercentiles?.p95 ?? 0),
+        completionRate: {
+          numerator: crNumerator,
+          denominator: crDenominator,
+          ratio: crDenominator > 0 ? crNumerator / crDenominator : 0,
+        },
       };
     },
   };
