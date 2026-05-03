@@ -31,6 +31,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueThreadInteractions,
   issues,
   issueWorkProducts,
   projects,
@@ -155,6 +156,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 // REFACTOR-LIF-371: review_gate_wake_loop — WAKE_COMMENT_IDS_KEY accumulates comment ids across coalesced wakes to prevent re-processing
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
+const WAKE_INTERACTION_KEY = "wakeInteraction";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
@@ -1534,6 +1536,34 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   return merged;
 }
 
+export function extractWakeInteraction(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  const raw = contextSnapshot?.[WAKE_INTERACTION_KEY];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const id = readNonEmptyString((raw as Record<string, unknown>).id);
+  if (!id) return null;
+  return raw as Record<string, unknown>;
+}
+
+function mergeWakeInteraction(...values: Array<unknown>): Record<string, unknown> | null {
+  let merged: Record<string, unknown> | null = null;
+  for (const value of values) {
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const candidate = value as Record<string, unknown>;
+      // Direct wakeInteraction object
+      if (readNonEmptyString(candidate.id)) {
+        merged = candidate;
+        continue;
+      }
+      // Context snapshot containing wakeInteraction
+      const nested = extractWakeInteraction(candidate);
+      if (nested) merged = nested;
+    }
+  }
+  return merged;
+}
+
 function enrichWakeContextSnapshot(input: {
   contextSnapshot: Record<string, unknown>;
   reason: string | null;
@@ -1580,6 +1610,13 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  const wakeInteraction = mergeWakeInteraction(
+    extractWakeInteraction(contextSnapshot),
+    payload?.[WAKE_INTERACTION_KEY],
+  );
+  if (wakeInteraction) {
+    contextSnapshot[WAKE_INTERACTION_KEY] = wakeInteraction;
+  }
 
   return {
     contextSnapshot,
@@ -1609,6 +1646,13 @@ export function mergeCoalescedContextSnapshot(
     // regenerate any structured payload from those ids.
     delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
   }
+  const mergedInteraction = mergeWakeInteraction(
+    extractWakeInteraction(existing),
+    extractWakeInteraction(incoming),
+  );
+  if (mergedInteraction) {
+    merged[WAKE_INTERACTION_KEY] = mergedInteraction;
+  }
   return merged;
 }
 
@@ -1636,6 +1680,7 @@ async function buildPaperclipWakePayload(input: {
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
+  const wakeInteractionSnapshot = extractWakeInteraction(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
@@ -1653,7 +1698,46 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary && !wakeInteractionSnapshot) return null;
+
+  const interactionId = wakeInteractionSnapshot ? readNonEmptyString(wakeInteractionSnapshot.id) : null;
+  const interactionRow = interactionId
+    ? await input.db
+        .select({
+          id: issueThreadInteractions.id,
+          kind: issueThreadInteractions.kind,
+          status: issueThreadInteractions.status,
+          result: issueThreadInteractions.result,
+          resolvedAt: issueThreadInteractions.resolvedAt,
+          resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+          resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+          sourceCommentId: issueThreadInteractions.sourceCommentId,
+          sourceRunId: issueThreadInteractions.sourceRunId,
+        })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, input.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null)
+    : null;
+  const interactionEvents = interactionRow
+    ? [
+        {
+          id: interactionRow.id,
+          kind: interactionRow.kind,
+          status: interactionRow.status,
+          result: interactionRow.result ?? null,
+          resolvedAt: interactionRow.resolvedAt?.toISOString() ?? null,
+          resolvedByAgentId: interactionRow.resolvedByAgentId ?? null,
+          resolvedByUserId: interactionRow.resolvedByUserId ?? null,
+          sourceCommentId: interactionRow.sourceCommentId ?? null,
+          sourceRunId: interactionRow.sourceRunId ?? null,
+        },
+      ]
+    : [];
 
   const commentRows =
     commentIds.length === 0
@@ -1778,6 +1862,7 @@ async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
+    interactionEvents,
     truncated,
     fallbackFetchNeeded: truncated || missingCommentCount > 0,
   };
@@ -2772,11 +2857,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     wakeupRequestId: string | null | undefined,
     status: string,
     patch?: Partial<typeof agentWakeupRequests.$inferInsert>,
+    opts?: { issueId?: string | null },
   ) {
     if (!wakeupRequestId) return;
+    let finalIssueStatus: string | null = null;
+    if (opts?.issueId && patch?.finishedAt) {
+      finalIssueStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, opts.issueId))
+        .then((rows) => rows[0]?.status ?? null);
+    }
     await db
       .update(agentWakeupRequests)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...patch, ...(finalIssueStatus !== null ? { finalIssueStatus } : {}), updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
   }
 
@@ -3633,6 +3727,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 status: "cancelled",
                 finishedAt: now,
                 error: reason,
+                finalIssueStatus: issue.status,
                 updatedAt: now,
               })
               .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
@@ -3922,7 +4017,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await setWakeupStatus(run.wakeupRequestId, "skipped", {
       finishedAt: now,
       error: reason,
-    });
+    }, { issueId });
 
     await db
       .update(issues)
@@ -4303,7 +4398,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-      });
+      }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
@@ -4638,7 +4733,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: "Agent not found",
-      });
+      }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) });
       const failedRun = await getRun(runId);
       if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
       return;
@@ -5092,7 +5187,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         { issueId, agentId: agent.id },
       );
     }
-    if (executionWorkspace.cwd) {
+    if (
+      process.env.WAKE_REQUIRES_WORKSPACE === "true" &&
+      (agent.requiresWorkspace === true || (rolePackId !== null && rolePackRequiresWorkspace(rolePackId))) &&
+      executionWorkspace.cwd
+    ) {
       let gitWorktreeValid = false;
       try {
         const gitResult = await execFile("git", ["rev-parse", "--is-inside-work-tree"], {
@@ -5825,7 +5924,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
         error: runErrorMessage,
-      });
+      }, { issueId });
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
       if (finalizedRun) {
@@ -5941,7 +6040,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: message,
-      });
+      }, { issueId });
 
       if (failedRun) {
         await appendRunEvent(failedRun, seq++, {
@@ -6034,7 +6133,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await setWakeupStatus(run.wakeupRequestId, "failed", {
             finishedAt: new Date(),
             error: message,
-          }).catch(() => undefined);
+          }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) }).catch(() => undefined);
           const failedRun = await getRun(runId).catch(() => null);
           if (failedRun) {
             // Emit a run-log event so the failure is visible in the run timeline,
@@ -6188,6 +6287,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: "failed",
               finishedAt: new Date(),
               error: "Deferred wake could not be promoted: agent is not invokable",
+              finalIssueStatus: issue.status,
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, deferred.id));
@@ -6212,6 +6312,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: "cancelled",
               finishedAt: new Date(),
               error: "Deferred wake suppressed by active subtree pause hold",
+              finalIssueStatus: issue.status,
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, deferred.id));
@@ -6820,6 +6921,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 status: "cancelled",
                 finishedAt: now,
                 error: reason,
+                finalIssueStatus: issue.status,
                 updatedAt: now,
               })
               .where(eq(agentWakeupRequests.id, scheduledRun.wakeupRequestId));
@@ -7463,7 +7565,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),
       error: reason,
-    });
+    }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) });
 
     if (cancelled) {
       await appendRunEvent(cancelled, 1, {
@@ -7505,7 +7607,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: new Date(),
         error: reason,
-      });
+      }, { issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) });
 
       const running = runningProcesses.get(run.id);
       if (running) {

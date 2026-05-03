@@ -213,6 +213,10 @@ function queueResolvedInteractionContinuationWakeup(input: {
     continuationPolicy: string;
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
+    result?: unknown;
+    resolvedAt?: Date | string | null;
+    resolvedByAgentId?: string | null;
+    resolvedByUserId?: string | null;
   };
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
@@ -228,10 +232,22 @@ function queueResolvedInteractionContinuationWakeup(input: {
   if (input.interaction.status === "expired") return;
   if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
 
+  const wakeInteraction = {
+    id: input.interaction.id,
+    kind: input.interaction.kind,
+    status: input.interaction.status,
+    result: input.interaction.result ?? null,
+    resolvedAt: input.interaction.resolvedAt instanceof Date
+      ? input.interaction.resolvedAt.toISOString()
+      : (input.interaction.resolvedAt ?? null),
+    resolvedByAgentId: input.interaction.resolvedByAgentId ?? null,
+    resolvedByUserId: input.interaction.resolvedByUserId ?? null,
+  };
+
   void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
     source: "automation",
     triggerDetail: "system",
-    reason: "issue_commented",
+    reason: "interaction_resolved",
     payload: {
       issueId: input.issue.id,
       interactionId: input.interaction.id,
@@ -240,6 +256,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
       mutation: "interaction",
+      wakeInteraction,
     },
     requestedByActorType: input.actor.actorType,
     requestedByActorId: input.actor.actorId,
@@ -251,8 +268,9 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
-      wakeReason: "issue_commented",
+      wakeReason: "interaction_resolved",
       source: input.source,
+      wakeInteraction,
     },
   }).catch((err) => logger.warn({
     err,
