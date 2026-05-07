@@ -1,6 +1,15 @@
 /**
  * Step definitions for @feature-recovery-watchdog
- * Feature: Recovery watchdog surfaces stale blockers under blocked parents
+ *
+ * API CONTRACTS
+ * GET  /api/companies/{companyId}/issues?originId={fingerprint}
+ *   → [{id, identifier, title, status, originKind, originId, ...}]
+ * POST /api/plugins/{pluginId}/jobs/{jobId}/trigger → { runId, jobId }
+ * GET  /api/plugins/{pluginId}/jobs/{jobId}/runs    → [{id, status}]
+ * POST /api/test/seed-stale-heartbeat-run
+ *   body: { companyId, issueId, ageMinutes } → 201 { id, lastOutputAt, ... }
+ *
+ * Locator contract: pure API test — no browser automation, no DOM locators.
  */
 
 import { Given, When, Then, Before, After } from "@cucumber/cucumber";
@@ -18,8 +27,6 @@ import {
   type IssueDetail,
 } from "../test-utils.js";
 
-// ── World state for this feature ──────────────────────────────────────────────
-
 interface WatchdogWorld {
   companyId: string;
   parentIssue: IssueDetail;
@@ -28,8 +35,6 @@ interface WatchdogWorld {
   fingerprint: string;
 }
 
-// Cucumber does not support typed World in .ts without custom world class;
-// store state in a plain object scoped to the scenario via Before/After.
 let world: WatchdogWorld;
 
 Before({ tags: "@feature-recovery-watchdog" }, async function () {
@@ -46,8 +51,6 @@ After({ tags: "@feature-recovery-watchdog" }, async function () {
   await disableWatchdogPlugin().catch(() => undefined);
 });
 
-// ── Step definitions ──────────────────────────────────────────────────────────
-
 Given(
   "the recovery-watchdog-plugin is installed and its cron job is running",
   async function () {
@@ -63,13 +66,11 @@ Given(
       title: "BDD child blocker C",
       status: "in_progress",
     });
-
     world.parentIssue = await createIssue(world.companyId, {
       title: "BDD blocked parent P",
       status: "blocked",
       blockedByIssueIds: [world.childIssue.id],
     });
-
     world.fingerprint = `stranded_blocker_under_blocked_parent:${world.parentIssue.id}:${world.childIssue.id}`;
   },
 );
@@ -81,9 +82,12 @@ Given(
   },
 );
 
-When("the cron job 'check-stale-blocked-parents' fires", async function () {
-  await triggerWatchdogCronJobAndWait();
-});
+When(
+  "the cron job 'check-stale-blocked-parents' fires",
+  async function () {
+    await triggerWatchdogCronJobAndWait();
+  },
+);
 
 Then(
   "a new issue exists with originKind='stranded_issue_recovery' targeting P",
@@ -92,19 +96,13 @@ Then(
     const active = matches.filter(
       (i) => i.status !== "done" && i.status !== "cancelled",
     );
-    assert.equal(
-      active.length,
-      1,
-      `Expected exactly 1 active recovery issue for fingerprint '${world.fingerprint}', got ${active.length}`,
+    assert.ok(
+      active.length > 0,
+      `Expected at least 1 active recovery issue for fingerprint '${world.fingerprint}', got 0`,
     );
-
     world.recoveryIssue = active[0];
 
-    const full = (await getIssue(world.recoveryIssue.id)) as IssueDetail & {
-      originKind?: string;
-      blockedByIssueIds?: string[];
-    };
-
+    const full = await getIssue(world.recoveryIssue.id);
     assert.equal(
       full.originKind,
       "stranded_issue_recovery",
@@ -114,7 +112,7 @@ Then(
     const blockedBy = full.blockedByIssueIds ?? [];
     assert.ok(
       blockedBy.includes(world.parentIssue.id),
-      `Expected recovery issue to target (be blocked by) parent P (${world.parentIssue.id}), ` +
+      `Expected recovery issue to be blocked by parent P (${world.parentIssue.id}), ` +
         `got blockedByIssueIds=${JSON.stringify(blockedBy)}`,
     );
   },
@@ -123,20 +121,12 @@ Then(
 Then(
   "the new issue has originFingerprint matching 'stranded_blocker_under_blocked_parent:<P.id>:<C.id>'",
   async function () {
-    assert.ok(
-      world.recoveryIssue,
-      "Recovery issue must exist before asserting originFingerprint",
-    );
-
-    const full = (await getIssue(world.recoveryIssue.id)) as IssueDetail & {
-      originId?: string;
-    };
-
-    const expectedFingerprint = world.fingerprint;
+    assert.ok(world.recoveryIssue, "Recovery issue must exist before asserting fingerprint");
+    const full = await getIssue(world.recoveryIssue.id);
     assert.equal(
       full.originId,
-      expectedFingerprint,
-      `Expected originId (fingerprint) to be '${expectedFingerprint}', got '${full.originId}'`,
+      world.fingerprint,
+      `Expected originId='${world.fingerprint}', got '${full.originId}'`,
     );
   },
 );
@@ -145,7 +135,6 @@ Then(
   "a second cron-job tick does NOT create a duplicate recovery issue",
   async function () {
     await triggerWatchdogCronJobAndWait();
-
     const matches = await listIssuesByOriginId(world.companyId, world.fingerprint);
     const active = matches.filter(
       (i) => i.status !== "done" && i.status !== "cancelled",
@@ -153,7 +142,7 @@ Then(
     assert.equal(
       active.length,
       1,
-      `Dedup failed: expected 1 active recovery issue after 2nd tick, got ${active.length}`,
+      `Dedup failed: expected exactly 1 active recovery issue after 2nd tick, got ${active.length}`,
     );
   },
 );
