@@ -1,0 +1,30 @@
+{
+  "name": "@paperclipai/plugin-recovery-watchdog",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Detects heartbeat runs silent >1 h that block a parent in status=blocked and creates an explicit recovery task if none exists.",
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": ["paperclip", "plugin", "recovery", "watchdog"],
+  "author": "LifeSimple Tech",
+  "license": "MIT",
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
