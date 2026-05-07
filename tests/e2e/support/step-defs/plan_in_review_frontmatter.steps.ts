@@ -16,6 +16,7 @@ import {
   listIssueComments,
   upsertIssueDocument,
   simulatePlanFrontmatterInReviewAction,
+  type IssueDetail,
   type IssueDocument,
   type IssueComment,
 } from "../test-utils.js";
