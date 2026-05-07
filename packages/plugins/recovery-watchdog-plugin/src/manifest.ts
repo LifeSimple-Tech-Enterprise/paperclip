@@ -16,6 +16,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agents.read",
     "jobs.schedule",
     "database.namespace.read",
+    "database.namespace.migrate",
   ],
   entrypoints: {
     worker: "./dist/worker.js",

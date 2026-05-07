@@ -43,7 +43,7 @@ Before({ tags: "@feature-plan-in-review" }, async function () {
   const companyId = getTestCompanyId();
   const planIssue = await createIssue(companyId, {
     title: "BDD plan-in-review test issue P",
-    status: "in_progress",
+    status: "todo",
   });
   world = {
     companyId,

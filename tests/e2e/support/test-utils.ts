@@ -121,6 +121,7 @@ export interface IssueDetail extends IssueRef {
   companyId: string;
   assigneeAgentId: string | null;
   blockedByIssueIds?: string[];
+  blockedBy?: Array<{ id: string }>;
   lastActivityAt?: string | null;
   originKind?: string | null;
   originId?: string | null;
@@ -323,7 +324,7 @@ export async function triggerWatchdogCronJobAndWait(): Promise<void> {
     );
     const runs = (await runsRes.json()) as Array<{ id: string; status: string }>;
     const run = runs.find((r) => r.id === runId);
-    if (run && (run.status === "completed" || run.status === "failed" || run.status === "error")) {
+    if (run && (run.status === "completed" || run.status === "succeeded" || run.status === "failed" || run.status === "error")) {
       if (run.status === "failed" || run.status === "error") {
         throw new Error(`Watchdog job run ${runId} ended with status '${run.status}'`);
       }

@@ -64,7 +64,7 @@ Given(
   async function () {
     world.childIssue = await createIssue(world.companyId, {
       title: "BDD child blocker C",
-      status: "in_progress",
+      status: "todo",
     });
     world.parentIssue = await createIssue(world.companyId, {
       title: "BDD blocked parent P",
@@ -105,15 +105,15 @@ Then(
     const full = await getIssue(world.recoveryIssue.id);
     assert.equal(
       full.originKind,
-      "stranded_issue_recovery",
-      `Expected originKind='stranded_issue_recovery', got '${full.originKind}'`,
+      "plugin:recovery-watchdog:stranded_issue_recovery",
+      `Expected originKind='plugin:recovery-watchdog:stranded_issue_recovery', got '${full.originKind}'`,
     );
 
-    const blockedBy = full.blockedByIssueIds ?? [];
+    const blockedBy = (full.blockedBy ?? []).map((b) => b.id);
     assert.ok(
       blockedBy.includes(world.parentIssue.id),
       `Expected recovery issue to be blocked by parent P (${world.parentIssue.id}), ` +
-        `got blockedByIssueIds=${JSON.stringify(blockedBy)}`,
+        `got blockedBy=${JSON.stringify(blockedBy)}`,
     );
   },
 );
